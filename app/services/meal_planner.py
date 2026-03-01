@@ -337,6 +337,13 @@ def generate_weekly_plan(db: Session, group_id: int | None = None) -> WeeklyPlan
 
     db.commit()
     db.refresh(weekly_plan)
+
+    # Enrich with CalorieNinjas data (overwrites Gemini estimates where available)
+    from app.services.nutrition import enrich_plan_calories
+    all_meals = [pm for dp in weekly_plan.daily_plans for pm in dp.planned_meals]
+    enrich_plan_calories(all_meals)
+    db.commit()
+
     return weekly_plan
 
 

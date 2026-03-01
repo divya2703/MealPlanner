@@ -32,6 +32,8 @@ def _apply_migrations():
         "ALTER TABLE pantry_items ADD COLUMN group_id INTEGER REFERENCES household_groups(id)",
         "ALTER TABLE meal_history ADD COLUMN group_id INTEGER REFERENCES household_groups(id)",
         "ALTER TABLE planned_meals ADD COLUMN estimated_calories INTEGER",
+        "ALTER TABLE user_preferences ADD COLUMN portion_size TEXT DEFAULT 'medium'",
+        "ALTER TABLE user_preferences ADD COLUMN calorie_target INTEGER DEFAULT 2000",
     ]
     with engine.connect() as conn:
         for sql in migrations:

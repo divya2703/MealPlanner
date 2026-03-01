@@ -57,8 +57,14 @@ HELP_TEXT = """*Meal Planning Bot* 🍽️
 • *fav* / *dislikes* — View lists
 • *rate 4* — Rate today's meals
 
+*Health*
+• *calories* — Today's personalized calorie breakdown
+• *portion small/medium/large* — Set your portion size
+• *target 1800* — Set daily calorie goal
+
 *Profile*
 • *name Priya* — Set your name
+• *me* — View your profile
 • *skip tomorrow breakfast lunch* — Skip meals
 • *away april* — Away for a period
 • *back* — Mark yourself returned
@@ -211,6 +217,14 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
 
     if lower in ("me", "profile", "status"):
         _handle_profile(db, from_number)
+        return
+
+    if lower.startswith("portion ") or lower == "portion":
+        _handle_portion(db, from_number, lower)
+        return
+
+    if lower.startswith("target ") or lower == "target":
+        _handle_target(db, from_number, lower)
         return
 
     if lower.startswith("away ") or lower == "away":
@@ -1063,6 +1077,48 @@ def _handle_skip(db: Session, number: str, text: str):
     send_whatsapp(number, f"Skipping *{meals_label}* on *{day_label}* 🚫\nYour dislikes won't affect those meals.")
 
 
+def _handle_portion(db: Session, number: str, text: str):
+    """Handle 'portion [small/medium/large]' — set portion size."""
+    prefs = db.query(UserPreferences).filter_by(user_id=number).first()
+    if not prefs:
+        send_whatsapp(number, "Send *hi* first to register.")
+        return
+
+    arg = text.replace("portion", "", 1).strip().lower()
+    valid = {"small": "0.75x", "medium": "1x", "large": "1.3x"}
+
+    if not arg or arg not in valid:
+        send_whatsapp(number, f"Your portion size: *{prefs.portion_size}* ({valid.get(prefs.portion_size, '1x')})\n\nSet with: *portion small* / *portion medium* / *portion large*")
+        return
+
+    prefs.portion_size = arg
+    db.commit()
+    send_whatsapp(number, f"Portion size set to *{arg}* ({valid[arg]} calories) ✅")
+
+
+def _handle_target(db: Session, number: str, text: str):
+    """Handle 'target [kcal]' — set daily calorie target."""
+    prefs = db.query(UserPreferences).filter_by(user_id=number).first()
+    if not prefs:
+        send_whatsapp(number, "Send *hi* first to register.")
+        return
+
+    arg = text.replace("target", "", 1).strip()
+
+    if not arg or not arg.isdigit():
+        send_whatsapp(number, f"Your daily target: *{prefs.calorie_target} kcal*\n\nSet with: *target 1800*")
+        return
+
+    target = int(arg)
+    if target < 800 or target > 5000:
+        send_whatsapp(number, "Target should be between 800 and 5000 kcal.")
+        return
+
+    prefs.calorie_target = target
+    db.commit()
+    send_whatsapp(number, f"Daily calorie target set to *{target} kcal* ✅")
+
+
 def _handle_set_name(db: Session, number: str, text: str):
     """Handle 'name [your name]' — set display name."""
     from app.models import UserPreferences
@@ -1083,26 +1139,39 @@ def _handle_set_name(db: Session, number: str, text: str):
 
 
 def _handle_calories(db: Session, number: str, gid: int | None = None):
-    """Show today's calorie breakdown."""
-    today = date.today()
+    """Show today's personalized calorie breakdown."""
+    from app.services.nutrition import get_personalized_calories
+
     meals = grocery_manager.get_today_meals(db, group_id=gid)
     if not meals:
         send_whatsapp(number, "No meals planned for today.")
         return
 
+    prefs = db.query(UserPreferences).filter_by(user_id=number).first()
+    mult = prefs.portion_multiplier if prefs else 1.0
+    target = prefs.calorie_target if prefs else 2000
+
     lines = ["*Today's Calories* 📊\n"]
     total = 0
     for pm in meals:
-        cals = pm.estimated_calories or 0
-        total += cals
+        base = pm.estimated_calories or 0
+        personal = get_personalized_calories(base, mult) if base else 0
+        total += personal
         emoji = {"breakfast": "🌅", "lunch": "☀️", "dinner": "🌙"}.get(pm.meal_type, "🍽️")
-        cal_str = f"{cals} kcal" if cals else "—"
+        cal_str = f"{personal} kcal" if personal else "—"
         lines.append(f"{emoji} {pm.meal_type.title()}: {pm.meal_name} — *{cal_str}*")
 
     if total:
-        lines.append(f"\n*Total: {total} kcal*")
+        remaining = target - total
+        lines.append(f"\n*Your total: {total} / {target} kcal*")
+        if remaining > 0:
+            lines.append(f"_{remaining} kcal remaining_")
+        elif remaining < 0:
+            lines.append(f"_Over by {abs(remaining)} kcal_")
+        if mult != 1.0:
+            lines.append(f"_(Adjusted for {prefs.portion_size} portions)_")
     else:
-        lines.append("\n_Calorie data not available for today's meals. Generate a new plan to get estimates._")
+        lines.append("\n_No calorie data. Generate a new plan to get estimates._")
 
     send_whatsapp(number, "\n".join(lines))
 
@@ -1136,6 +1205,10 @@ def _handle_profile(db: Session, number: str):
     dislikes = prefs.dislikes
     if dislikes:
         lines.append(f"*Dislikes:* {', '.join(dislikes)}")
+
+    portion_label = {"small": "0.75x", "medium": "1x", "large": "1.3x"}.get(prefs.portion_size, "1x")
+    lines.append(f"*Portion:* {prefs.portion_size} ({portion_label})")
+    lines.append(f"*Calorie target:* {prefs.calorie_target} kcal/day")
 
     if prefs.away_from and prefs.away_until:
         lines.append(f"*Away:* {prefs.away_from.strftime('%d %b')} to {prefs.away_until.strftime('%d %b')}")

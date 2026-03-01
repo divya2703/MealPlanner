@@ -44,6 +44,8 @@ class UserPreferences(Base):
     max_prep_time_minutes: Mapped[int] = mapped_column(Integer, default=60)
     dislikes_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON list
     favorites_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON list
+    portion_size: Mapped[str] = mapped_column(String, default="medium")  # small/medium/large
+    calorie_target: Mapped[int] = mapped_column(Integer, default=2000)  # daily kcal goal
     away_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     away_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -55,6 +57,10 @@ class UserPreferences(Base):
     @property
     def favorites(self) -> list[str]:
         return json.loads(self.favorites_json)
+
+    @property
+    def portion_multiplier(self) -> float:
+        return {"small": 0.75, "medium": 1.0, "large": 1.3}.get(self.portion_size, 1.0)
 
     def is_home(self, check_date: date | None = None) -> bool:
         if check_date is None:
