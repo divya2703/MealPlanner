@@ -6,6 +6,9 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
 
+    # Telegram
+    telegram_bot_token: str = ""
+
     # Twilio
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""

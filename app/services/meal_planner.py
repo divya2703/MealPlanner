@@ -115,19 +115,25 @@ def _extract_function_args(response, function_name: str) -> dict | None:
     return None
 
 
-def _get_recent_meals(db: Session, days: int = 14) -> list[str]:
+def _get_recent_meals(db: Session, group_id: int | None = None, days: int = 14) -> list[str]:
     """Get recently cooked meal names to avoid repeats."""
     cutoff = date.today() - timedelta(days=days)
-    history = db.query(MealHistory.meal_name).filter(MealHistory.cooked_date >= cutoff).all()
+    query = db.query(MealHistory.meal_name).filter(MealHistory.cooked_date >= cutoff)
+    if group_id is not None:
+        query = query.filter(MealHistory.group_id == group_id)
+    history = query.all()
     return list({h.meal_name for h in history})
 
 
-def _get_user_prefs(db: Session) -> UserPreferences:
+def _get_user_prefs(db: Session, group_id: int | None = None) -> UserPreferences:
     """Get user preferences, creating defaults if needed."""
-    prefs = db.query(UserPreferences).first()
+    query = db.query(UserPreferences)
+    if group_id is not None:
+        query = query.filter(UserPreferences.group_id == group_id)
+    prefs = query.first()
     if not prefs:
         prefs = UserPreferences(
-            whatsapp_number=settings.user_whatsapp_number,
+            user_id=settings.user_whatsapp_number,
             family_size=settings.family_size,
         )
         db.add(prefs)
@@ -136,11 +142,14 @@ def _get_user_prefs(db: Session) -> UserPreferences:
     return prefs
 
 
-def _get_household_context(db: Session, week_start: date) -> str:
+def _get_household_context(db: Session, week_start: date, group_id: int | None = None) -> str:
     """Build context about who's home and their preferences for each day of the week."""
     from app.models import MealSkip
 
-    all_users = db.query(UserPreferences).all()
+    query = db.query(UserPreferences)
+    if group_id is not None:
+        query = query.filter(UserPreferences.group_id == group_id)
+    all_users = query.all()
     if len(all_users) <= 1:
         return ""
 
@@ -158,7 +167,7 @@ def _get_household_context(db: Session, week_start: date) -> str:
 
             # Check for meal-level skips
             skip = db.query(MealSkip).filter(
-                MealSkip.whatsapp_number == user.whatsapp_number,
+                MealSkip.user_id == user.user_id,
                 MealSkip.skip_date == day_date,
             ).first()
 
@@ -203,13 +212,16 @@ def _get_household_context(db: Session, week_start: date) -> str:
     return "\n".join(lines)
 
 
-def generate_weekly_plan(db: Session) -> WeeklyPlan | None:
+def generate_weekly_plan(db: Session, group_id: int | None = None) -> WeeklyPlan | None:
     """Generate a 7-day meal plan using Gemini."""
-    prefs = _get_user_prefs(db)
-    recent_meals = _get_recent_meals(db)
+    prefs = _get_user_prefs(db, group_id=group_id)
+    recent_meals = _get_recent_meals(db, group_id=group_id)
 
     # Gather all household favorites and dislikes
-    all_users = db.query(UserPreferences).all()
+    all_users_query = db.query(UserPreferences)
+    if group_id is not None:
+        all_users_query = all_users_query.filter(UserPreferences.group_id == group_id)
+    all_users = all_users_query.all()
     all_favorites = []
     all_dislikes = []
     for u in all_users:
@@ -226,7 +238,7 @@ def generate_weekly_plan(db: Session) -> WeeklyPlan | None:
     if today.weekday() == 6:
         week_start = today + timedelta(days=1)
 
-    household_context = _get_household_context(db, week_start)
+    household_context = _get_household_context(db, week_start, group_id=group_id)
 
     system_prompt = WEEKLY_PLAN_SYSTEM_PROMPT.format(
         family_size=prefs.family_size,
@@ -273,6 +285,7 @@ def generate_weekly_plan(db: Session) -> WeeklyPlan | None:
 
     # week_start already calculated above
     weekly_plan = WeeklyPlan(week_start=week_start, status="draft")
+    weekly_plan.group_id = group_id
     db.add(weekly_plan)
     db.flush()
 
@@ -300,10 +313,10 @@ def generate_weekly_plan(db: Session) -> WeeklyPlan | None:
 
 
 def get_swap_suggestions(
-    db: Session, day: str, meal_type: str, current_meal: str, other_meals: list[str]
+    db: Session, day: str, meal_type: str, current_meal: str, other_meals: list[str], group_id: int | None = None
 ) -> list[dict] | None:
     """Get 3 alternative meal suggestions for swapping."""
-    recent_meals = _get_recent_meals(db)
+    recent_meals = _get_recent_meals(db, group_id=group_id)
 
     system_prompt = SWAP_SUGGESTIONS_SYSTEM_PROMPT.format(
         meal_type=meal_type,
@@ -343,10 +356,10 @@ def get_swap_suggestions(
 
 
 def extract_grocery_list(
-    db: Session, meals: list[str], pantry_items: list[str] | None = None
+    db: Session, meals: list[str], pantry_items: list[str] | None = None, group_id: int | None = None
 ) -> list[dict] | None:
     """Extract aggregated ingredient list for given meals using Gemini."""
-    prefs = _get_user_prefs(db)
+    prefs = _get_user_prefs(db, group_id=group_id)
 
     system_prompt = INGREDIENT_EXTRACTION_SYSTEM_PROMPT.format(
         family_size=prefs.family_size,

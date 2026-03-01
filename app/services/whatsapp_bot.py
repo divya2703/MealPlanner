@@ -12,6 +12,7 @@ from app.models import (
     DailyPlan,
     MealHistory,
     PlannedMeal,
+    UserPreferences,
     WeeklyPlan,
 )
 from app.services import grocery_manager, meal_planner
@@ -62,33 +63,50 @@ HELP_TEXT = """*Meal Planning Bot* 🍽️
 • *away april* — Away for a period
 • *back* — Mark yourself returned
 
+*Groups*
+• *group create myflat* — Create a group
+• *group join myflat* — Join a group
+• *group info* — View your group
+
 _New here? Set up with:_
-*name [you]* → *dislike [foods]* → *fav [foods]*
+*name [you]* → *group join [name]* → *dislike [foods]* → *fav [foods]*
 _Your dislikes auto-adjust the plan when you're home._"""
 
 
 def _ensure_user_registered(db: Session, number: str):
     """Auto-register a user if they message the bot for the first time."""
-    from app.models import UserPreferences
+    from app.models import HouseholdGroup, UserPreferences
     from app.config import settings
 
-    existing = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    existing = db.query(UserPreferences).filter_by(user_id=number).first()
     if not existing:
+        # Assign to default group
+        default_group = db.query(HouseholdGroup).filter_by(name="default").first()
         prefs = UserPreferences(
-            whatsapp_number=number,
+            user_id=number,
             family_size=settings.family_size,
+            group_id=default_group.id if default_group else None,
         )
         db.add(prefs)
         db.commit()
         logger.info(f"Auto-registered new user: {number}")
 
 
+def _get_user_group_id(db: Session, user_id: str) -> int | None:
+    """Get the group_id for a user."""
+    prefs = db.query(UserPreferences).filter_by(user_id=user_id).first()
+    return prefs.group_id if prefs else None
+
+
 def handle_message(db: Session, from_number: str, body: str) -> None:
-    """Main entry point: route an incoming WhatsApp message."""
+    """Main entry point: route an incoming message from any platform."""
     text = body.strip()
 
     # Auto-register user on first message
     _ensure_user_registered(db, from_number)
+
+    # Resolve group context once
+    gid = _get_user_group_id(db, from_number)
 
     # Keyword-based intent detection — these work regardless of active flow
     lower = text.lower().strip()
@@ -97,48 +115,52 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
         send_whatsapp(from_number, HELP_TEXT)
         return
 
+    if lower.startswith("group ") or lower == "group":
+        _handle_group_command(db, from_number, lower)
+        return
+
     if lower in ("today", "today's meals", "todays meals"):
-        _handle_today(db, from_number)
+        _handle_today(db, from_number, gid)
         return
 
     if lower in ("tomorrow", "tomorrow's meals", "tomorrows meals"):
-        _handle_tomorrow(db, from_number)
+        _handle_tomorrow(db, from_number, gid)
         return
 
     if lower in ("grocery", "list", "grocery list", "shopping list"):
-        _handle_grocery_list(db, from_number)
+        _handle_grocery_list(db, from_number, gid)
         return
 
     if lower in ("grocery today", "list today", "grocery for today"):
-        _handle_daily_grocery(db, from_number, "today")
+        _handle_daily_grocery(db, from_number, "today", gid)
         return
 
     if lower in ("grocery tomorrow", "list tomorrow", "grocery for tomorrow"):
-        _handle_daily_grocery(db, from_number, "tomorrow")
+        _handle_daily_grocery(db, from_number, "tomorrow", gid)
         return
 
     if lower in ("swiggy", "instamart", "swiggy list"):
-        _handle_swiggy_list(db, from_number)
+        _handle_swiggy_list(db, from_number, gid)
         return
 
     if lower in ("swiggy today", "instamart today"):
-        _handle_daily_swiggy(db, from_number, "today")
+        _handle_daily_swiggy(db, from_number, "today", gid)
         return
 
     if lower in ("swiggy tomorrow", "instamart tomorrow"):
-        _handle_daily_swiggy(db, from_number, "tomorrow")
+        _handle_daily_swiggy(db, from_number, "tomorrow", gid)
         return
 
     if lower == "bought" or lower.startswith("bought "):
-        _handle_bought(db, from_number, lower)
+        _handle_bought(db, from_number, lower, gid)
         return
 
     if lower == "out of" or lower.startswith("out of "):
-        _handle_out_of(db, from_number, lower)
+        _handle_out_of(db, from_number, lower, gid)
         return
 
     if lower.startswith("rate "):
-        _handle_rate(db, from_number, lower)
+        _handle_rate(db, from_number, lower, gid)
         return
 
     if lower.startswith("suggest"):
@@ -172,15 +194,15 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
     # Check for active conversation flow
     state = _get_active_state(db, from_number)
     if state:
-        _handle_flow(db, from_number, text, state)
+        _handle_flow(db, from_number, text, state, gid)
         return
 
     # Commands that start new flows
     if lower in ("plan", "meal plan", "weekly plan", "new plan"):
-        _start_weekly_plan_flow(db, from_number)
+        _start_weekly_plan_flow(db, from_number, gid)
 
     elif lower.startswith("swap "):
-        _start_swap_flow(db, from_number, lower)
+        _start_swap_flow(db, from_number, lower, gid)
 
     else:
         # Use Gemini intent detection for natural language
@@ -191,24 +213,24 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
             if intent_name == "approve":
                 send_whatsapp(from_number, "No active plan to approve. Send *plan* to create one.")
             elif intent_name == "regenerate":
-                _start_weekly_plan_flow(db, from_number)
+                _start_weekly_plan_flow(db, from_number, gid)
             elif intent_name == "swap":
                 day = intent.get("day", "")
                 meal_type = intent.get("meal_type", "dinner")
                 if day:
-                    _start_swap_flow(db, from_number, f"swap {day} {meal_type}")
+                    _start_swap_flow(db, from_number, f"swap {day} {meal_type}", gid)
                 else:
                     send_whatsapp(from_number, "Which day do you want to swap? E.g., *swap monday dinner*")
             elif intent_name == "today":
-                _handle_today(db, from_number)
+                _handle_today(db, from_number, gid)
             elif intent_name == "tomorrow":
-                _handle_tomorrow(db, from_number)
+                _handle_tomorrow(db, from_number, gid)
             elif intent_name == "grocery":
-                _handle_grocery_list(db, from_number)
+                _handle_grocery_list(db, from_number, gid)
             elif intent_name == "grocery_today":
-                _handle_daily_grocery(db, from_number, "today")
+                _handle_daily_grocery(db, from_number, "today", gid)
             elif intent_name == "grocery_tomorrow":
-                _handle_daily_grocery(db, from_number, "tomorrow")
+                _handle_daily_grocery(db, from_number, "tomorrow", gid)
             elif intent_name == "suggest":
                 _handle_suggest(db, from_number, text)
             elif intent_name == "help":
@@ -228,7 +250,7 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
 def _get_active_state(db: Session, number: str) -> ConversationState | None:
     return (
         db.query(ConversationState)
-        .filter(ConversationState.whatsapp_number == number)
+        .filter(ConversationState.user_id == number)
         .order_by(ConversationState.updated_at.desc())
         .first()
     )
@@ -236,9 +258,9 @@ def _get_active_state(db: Session, number: str) -> ConversationState | None:
 
 def _set_state(db: Session, number: str, flow: str, step: str, context: dict | None = None) -> ConversationState:
     # Clear any existing state
-    db.query(ConversationState).filter(ConversationState.whatsapp_number == number).delete()
+    db.query(ConversationState).filter(ConversationState.user_id == number).delete()
     state = ConversationState(
-        whatsapp_number=number,
+        user_id=number,
         flow_name=flow,
         step=step,
         context_json=json.dumps(context or {}),
@@ -250,18 +272,17 @@ def _set_state(db: Session, number: str, flow: str, step: str, context: dict | N
 
 
 def _clear_state(db: Session, number: str):
-    db.query(ConversationState).filter(ConversationState.whatsapp_number == number).delete()
+    db.query(ConversationState).filter(ConversationState.user_id == number).delete()
     db.commit()
 
 
 # --- Flow Handlers ---
 
 
-def _handle_flow(db: Session, number: str, text: str, state: ConversationState):
+def _handle_flow(db: Session, number: str, text: str, state: ConversationState, gid: int | None = None):
     """Route to the appropriate flow handler based on active state."""
     lower = text.lower().strip()
 
-    # Allow canceling any flow
     if lower in ("cancel", "stop", "quit", "exit"):
         _clear_state(db, number)
         send_whatsapp(number, "Cancelled. Send *help* for commands.")
@@ -270,21 +291,21 @@ def _handle_flow(db: Session, number: str, text: str, state: ConversationState):
     flow = state.flow_name
 
     if flow == "weekly_plan":
-        _weekly_plan_flow(db, number, text, state)
+        _weekly_plan_flow(db, number, text, state, gid)
     elif flow == "swap":
         _swap_flow(db, number, text, state)
     elif flow == "daily_confirm":
-        _daily_confirm_flow(db, number, text, state)
+        _daily_confirm_flow(db, number, text, state, gid)
     else:
         _clear_state(db, number)
         send_whatsapp(number, "Something went wrong. Send *help* for commands.")
 
 
-def _start_weekly_plan_flow(db: Session, number: str):
+def _start_weekly_plan_flow(db: Session, number: str, gid: int | None = None):
     """Generate and send a weekly plan, then wait for approval."""
     send_whatsapp(number, "Generating your weekly meal plan... This may take a moment.")
 
-    weekly_plan = meal_planner.generate_weekly_plan(db)
+    weekly_plan = meal_planner.generate_weekly_plan(db, group_id=gid)
     if not weekly_plan:
         send_whatsapp(number, "Sorry, I couldn't generate a plan right now. Please try again.")
         return
@@ -292,10 +313,10 @@ def _start_weekly_plan_flow(db: Session, number: str):
     formatted = meal_planner.format_weekly_plan(weekly_plan)
     send_whatsapp(number, formatted)
 
-    _set_state(db, number, "weekly_plan", "awaiting_approval", {"plan_id": weekly_plan.id})
+    _set_state(db, number, "weekly_plan", "awaiting_approval", {"plan_id": weekly_plan.id, "group_id": gid})
 
 
-def _weekly_plan_flow(db: Session, number: str, text: str, state: ConversationState):
+def _weekly_plan_flow(db: Session, number: str, text: str, state: ConversationState, gid: int | None = None):
     """Handle weekly plan approval flow."""
     ctx = state.context
     step = state.step
@@ -310,7 +331,7 @@ def _weekly_plan_flow(db: Session, number: str, text: str, state: ConversationSt
                 db.commit()
                 send_whatsapp(number, "Plan approved! ✅\nGenerating grocery list...")
 
-                grocery_list = grocery_manager.generate_grocery_list(db, plan)
+                grocery_list = grocery_manager.generate_grocery_list(db, plan, group_id=gid)
                 if grocery_list:
                     formatted = grocery_manager.format_grocery_list(grocery_list)
                     send_whatsapp(number, formatted)
@@ -327,11 +348,11 @@ def _weekly_plan_flow(db: Session, number: str, text: str, state: ConversationSt
                 db.delete(old)
                 db.commit()
             _clear_state(db, number)
-            _start_weekly_plan_flow(db, number)
+            _start_weekly_plan_flow(db, number, gid)
 
         elif lower.startswith("swap "):
             _clear_state(db, number)
-            _start_swap_flow(db, number, lower)
+            _start_swap_flow(db, number, lower, gid)
 
         else:
             # Try intent detection for natural language during plan approval
@@ -340,16 +361,15 @@ def _weekly_plan_flow(db: Session, number: str, text: str, state: ConversationSt
                 intent_name = intent.get("intent", "other")
 
                 if intent_name == "approve":
-                    # Re-trigger approval
-                    _weekly_plan_flow(db, number, "1", state)
+                    _weekly_plan_flow(db, number, "1", state, gid)
                 elif intent_name == "regenerate":
-                    _weekly_plan_flow(db, number, "2", state)
+                    _weekly_plan_flow(db, number, "2", state, gid)
                 elif intent_name == "swap":
                     day = intent.get("day", "")
                     meal_type = intent.get("meal_type", "dinner")
                     if day:
                         _clear_state(db, number)
-                        _start_swap_flow(db, number, f"swap {day} {meal_type}")
+                        _start_swap_flow(db, number, f"swap {day} {meal_type}", gid)
                     else:
                         send_whatsapp(number, "Which day and meal? E.g., *swap friday dinner*")
                 else:
@@ -358,9 +378,8 @@ def _weekly_plan_flow(db: Session, number: str, text: str, state: ConversationSt
                 send_whatsapp(number, "Reply *1* to approve, *2* to regenerate, or *swap [day] [meal]* to change a specific meal.")
 
 
-def _start_swap_flow(db: Session, number: str, text: str):
+def _start_swap_flow(db: Session, number: str, text: str, gid: int | None = None):
     """Parse swap command and get suggestions."""
-    # Parse: swap monday dinner
     parts = text.replace("swap", "").strip().split()
     if len(parts) < 2:
         send_whatsapp(number, "Usage: *swap [day] [meal type]*\nExample: swap monday dinner")
@@ -380,12 +399,10 @@ def _start_swap_flow(db: Session, number: str, text: str):
         return
 
     # Find the planned meal
-    active_plan = (
-        db.query(WeeklyPlan)
-        .filter(WeeklyPlan.status.in_(["draft", "approved", "active"]))
-        .order_by(WeeklyPlan.created_at.desc())
-        .first()
-    )
+    q = db.query(WeeklyPlan).filter(WeeklyPlan.status.in_(["draft", "approved", "active"]))
+    if gid is not None:
+        q = q.filter(WeeklyPlan.group_id == gid)
+    active_plan = q.order_by(WeeklyPlan.created_at.desc()).first()
     if not active_plan:
         send_whatsapp(number, "No active meal plan found. Send *plan* to create one.")
         return
@@ -414,7 +431,7 @@ def _start_swap_flow(db: Session, number: str, text: str):
 
     send_whatsapp(number, f"Finding alternatives for *{target_meal.meal_name}*...")
 
-    suggestions = meal_planner.get_swap_suggestions(db, day, meal_type, target_meal.meal_name, other_meals)
+    suggestions = meal_planner.get_swap_suggestions(db, day, meal_type, target_meal.meal_name, other_meals, group_id=gid)
     if not suggestions:
         send_whatsapp(number, "Couldn't generate alternatives. Please try again.")
         return
@@ -464,14 +481,17 @@ def _swap_flow(db: Session, number: str, text: str, state: ConversationState):
 # --- Daily Confirmation Flow ---
 
 
-def send_daily_confirmation(db: Session, number: str):
+def send_daily_confirmation(db: Session, number: str, gid: int | None = None):
     """Send tomorrow's meals and ask for confirmation (triggered by scheduler)."""
-    meals = grocery_manager.get_tomorrow_meals(db)
+    meals = grocery_manager.get_tomorrow_meals(db, group_id=gid)
     if not meals:
         return
 
     tomorrow = date.today() + timedelta(days=1)
-    daily = db.query(DailyPlan).filter(DailyPlan.plan_date == tomorrow).first()
+    q = db.query(DailyPlan)
+    if gid is not None:
+        q = q.join(WeeklyPlan).filter(WeeklyPlan.group_id == gid)
+    daily = q.filter(DailyPlan.plan_date == tomorrow).first()
     if not daily:
         return
 
@@ -479,10 +499,10 @@ def send_daily_confirmation(db: Session, number: str):
     msg = f"*Tomorrow's Meals:*\n\n{formatted}\n\nReply *ok* to confirm or *swap [day] [meal]* to change."
     send_whatsapp(number, msg)
 
-    _set_state(db, number, "daily_confirm", "awaiting_response", {"daily_plan_id": daily.id})
+    _set_state(db, number, "daily_confirm", "awaiting_response", {"daily_plan_id": daily.id, "group_id": gid})
 
 
-def _daily_confirm_flow(db: Session, number: str, text: str, state: ConversationState):
+def _daily_confirm_flow(db: Session, number: str, text: str, state: ConversationState, gid: int | None = None):
     """Handle daily confirmation response."""
     lower = text.strip().lower()
     ctx = state.context
@@ -497,7 +517,7 @@ def _daily_confirm_flow(db: Session, number: str, text: str, state: Conversation
 
     elif lower.startswith("swap "):
         _clear_state(db, number)
-        _start_swap_flow(db, number, lower)
+        _start_swap_flow(db, number, lower, gid)
 
     else:
         send_whatsapp(number, "Reply *ok* to confirm or *swap [day] [meal]* to change.")
@@ -506,48 +526,52 @@ def _daily_confirm_flow(db: Session, number: str, text: str, state: Conversation
 # --- Direct Command Handlers ---
 
 
-def _handle_today(db: Session, number: str):
+def _handle_today(db: Session, number: str, gid: int | None = None):
     today = date.today()
-    daily = db.query(DailyPlan).filter(DailyPlan.plan_date == today).first()
-    if not daily:
+    meals = grocery_manager.get_today_meals(db, group_id=gid)
+    if not meals:
         send_whatsapp(number, "No meals planned for today. Send *plan* to create a weekly plan.")
         return
-    formatted = meal_planner.format_daily_meals(daily)
-    send_whatsapp(number, formatted)
+    # Get the DailyPlan for formatting
+    q = db.query(DailyPlan)
+    if gid is not None:
+        q = q.join(WeeklyPlan).filter(WeeklyPlan.group_id == gid)
+    daily = q.filter(DailyPlan.plan_date == today).first()
+    if daily:
+        send_whatsapp(number, meal_planner.format_daily_meals(daily))
 
 
-def _handle_tomorrow(db: Session, number: str):
+def _handle_tomorrow(db: Session, number: str, gid: int | None = None):
     tomorrow = date.today() + timedelta(days=1)
-    daily = db.query(DailyPlan).filter(DailyPlan.plan_date == tomorrow).first()
-    if not daily:
+    meals = grocery_manager.get_tomorrow_meals(db, group_id=gid)
+    if not meals:
         send_whatsapp(number, "No meals planned for tomorrow.")
         return
-    formatted = meal_planner.format_daily_meals(daily)
-    send_whatsapp(number, formatted)
+    q = db.query(DailyPlan)
+    if gid is not None:
+        q = q.join(WeeklyPlan).filter(WeeklyPlan.group_id == gid)
+    daily = q.filter(DailyPlan.plan_date == tomorrow).first()
+    if daily:
+        send_whatsapp(number, meal_planner.format_daily_meals(daily))
 
 
-def _handle_grocery_list(db: Session, number: str):
-    gl = grocery_manager.get_current_grocery_list(db)
+def _handle_grocery_list(db: Session, number: str, gid: int | None = None):
+    gl = grocery_manager.get_current_grocery_list(db, group_id=gid)
     if not gl:
         send_whatsapp(number, "No grocery list found. Approve a meal plan first to generate one.")
         return
-    formatted = grocery_manager.format_grocery_list(gl)
-    send_whatsapp(number, formatted)
+    send_whatsapp(number, grocery_manager.format_grocery_list(gl))
 
 
-def _handle_swiggy_list(db: Session, number: str):
-    gl = grocery_manager.get_current_grocery_list(db)
+def _handle_swiggy_list(db: Session, number: str, gid: int | None = None):
+    gl = grocery_manager.get_current_grocery_list(db, group_id=gid)
     if not gl:
         send_whatsapp(number, "No grocery list found. Approve a meal plan first.")
         return
-    formatted = grocery_manager.format_swiggy_list(gl)
-    send_whatsapp(number, formatted)
+    send_whatsapp(number, grocery_manager.format_swiggy_list(gl))
 
 
-def _handle_daily_grocery(db: Session, number: str, day: str):
-    """Handle 'grocery today' / 'grocery tomorrow' commands."""
-    from datetime import timedelta
-
+def _handle_daily_grocery(db: Session, number: str, day: str, gid: int | None = None):
     if day == "today":
         target = date.today()
         label = "Today"
@@ -556,18 +580,14 @@ def _handle_daily_grocery(db: Session, number: str, day: str):
         label = "Tomorrow"
 
     send_whatsapp(number, f"Extracting grocery list for {label.lower()}...")
-    items = grocery_manager.get_daily_grocery(db, target)
+    items = grocery_manager.get_daily_grocery(db, target, group_id=gid)
     if not items:
         send_whatsapp(number, f"No meals planned for {label.lower()}.")
         return
-    formatted = grocery_manager.format_daily_grocery(items, label)
-    send_whatsapp(number, formatted)
+    send_whatsapp(number, grocery_manager.format_daily_grocery(items, label))
 
 
-def _handle_daily_swiggy(db: Session, number: str, day: str):
-    """Handle 'swiggy today' / 'swiggy tomorrow' commands."""
-    from datetime import timedelta
-
+def _handle_daily_swiggy(db: Session, number: str, day: str, gid: int | None = None):
     if day == "today":
         target = date.today()
         label = "Today"
@@ -576,15 +596,14 @@ def _handle_daily_swiggy(db: Session, number: str, day: str):
         label = "Tomorrow"
 
     send_whatsapp(number, f"Generating Swiggy links for {label.lower()}...")
-    items = grocery_manager.get_daily_grocery(db, target)
+    items = grocery_manager.get_daily_grocery(db, target, group_id=gid)
     if not items:
         send_whatsapp(number, f"No meals planned for {label.lower()}.")
         return
-    formatted = grocery_manager.format_daily_swiggy(items, label)
-    send_whatsapp(number, formatted)
+    send_whatsapp(number, grocery_manager.format_daily_swiggy(items, label))
 
 
-def _handle_bought(db: Session, number: str, text: str):
+def _handle_bought(db: Session, number: str, text: str, gid: int | None = None):
     """Handle 'bought [items]' command."""
     items_text = text.replace("bought", "", 1).strip()
     if not items_text:
@@ -594,14 +613,13 @@ def _handle_bought(db: Session, number: str, text: str):
     item_names = [i.strip() for i in items_text.split(",") if i.strip()]
 
     # Try to match against grocery list
-    gl = grocery_manager.get_current_grocery_list(db)
+    gl = grocery_manager.get_current_grocery_list(db, group_id=gid)
     matched = []
     if gl:
         matched = grocery_manager.mark_items_bought(db, gl, item_names)
 
     # Also update pantry
     for name in item_names:
-        # Try to parse quantity: "2 kg tomatoes" or just "tomatoes"
         qty_match = re.match(r"(\d+(?:\.\d+)?)\s*(kg|g|l|ml|pieces?|bunch)?\s+(.+)", name)
         if qty_match:
             quantity = float(qty_match.group(1))
@@ -612,7 +630,7 @@ def _handle_bought(db: Session, number: str, text: str):
             unit = "pieces"
             item_name = name
 
-        grocery_manager.update_pantry(db, item_name, quantity, unit)
+        grocery_manager.update_pantry(db, item_name, quantity, unit, group_id=gid)
 
     if matched:
         send_whatsapp(number, f"Marked as bought: {', '.join(matched)} ✅\nPantry updated.")
@@ -620,23 +638,22 @@ def _handle_bought(db: Session, number: str, text: str):
         send_whatsapp(number, f"Pantry updated with: {', '.join(item_names)} ✅")
 
 
-def _handle_out_of(db: Session, number: str, text: str):
+def _handle_out_of(db: Session, number: str, text: str, gid: int | None = None):
     """Handle 'out of [item]' command."""
     item_name = text.replace("out of", "", 1).strip()
     if not item_name:
         send_whatsapp(number, "Usage: *out of tomatoes*")
         return
 
-    result = grocery_manager.mark_depleted(db, item_name)
+    result = grocery_manager.mark_depleted(db, item_name, group_id=gid)
     if result:
         send_whatsapp(number, f"Marked *{result.name}* as depleted. It will be added to the next grocery list.")
     else:
-        # Create new pantry item with 0 quantity
-        grocery_manager.update_pantry(db, item_name, 0, "pieces")
+        grocery_manager.update_pantry(db, item_name, 0, "pieces", group_id=gid)
         send_whatsapp(number, f"Noted — *{item_name}* is out of stock. It will be included in the next grocery list.")
 
 
-def _handle_rate(db: Session, number: str, text: str):
+def _handle_rate(db: Session, number: str, text: str, gid: int | None = None):
     """Handle 'rate [1-5]' command — rate today's meals."""
     parts = text.split()
     if len(parts) < 2 or not parts[1].isdigit():
@@ -649,7 +666,15 @@ def _handle_rate(db: Session, number: str, text: str):
         return
 
     today = date.today()
-    daily = db.query(DailyPlan).filter(DailyPlan.plan_date == today).first()
+    meals = grocery_manager.get_today_meals(db, group_id=gid)
+    if not meals:
+        send_whatsapp(number, "No meals planned for today to rate.")
+        return
+
+    q = db.query(DailyPlan)
+    if gid is not None:
+        q = q.join(WeeklyPlan).filter(WeeklyPlan.group_id == gid)
+    daily = q.filter(DailyPlan.plan_date == today).first()
     if not daily:
         send_whatsapp(number, "No meals planned for today to rate.")
         return
@@ -660,6 +685,7 @@ def _handle_rate(db: Session, number: str, text: str):
             meal_type=pm.meal_type,
             cooked_date=today,
             rating=rating,
+            group_id=gid,
         )
         db.add(history)
         pm.status = "cooked"
@@ -667,6 +693,54 @@ def _handle_rate(db: Session, number: str, text: str):
     db.commit()
     stars = "⭐" * rating
     send_whatsapp(number, f"Rated today's meals: {stars} ({rating}/5)\nThanks for the feedback!")
+
+
+def _handle_group_command(db: Session, number: str, text: str):
+    """Handle group create/join/info commands."""
+    from app.models import HouseholdGroup, UserPreferences
+
+    parts = text.split(maxsplit=2)
+    sub = parts[1] if len(parts) > 1 else ""
+
+    if sub == "create" and len(parts) >= 3:
+        group_name = parts[2].strip().lower()
+        existing = db.query(HouseholdGroup).filter_by(name=group_name).first()
+        if existing:
+            send_whatsapp(number, f"Group '{group_name}' already exists. Use *group join {group_name}*")
+            return
+        group = HouseholdGroup(name=group_name)
+        db.add(group)
+        db.flush()
+        prefs = db.query(UserPreferences).filter_by(user_id=number).first()
+        if prefs:
+            prefs.group_id = group.id
+        db.commit()
+        send_whatsapp(number, f"Group *{group_name}* created! ✅\nOthers can join with: *group join {group_name}*")
+
+    elif sub == "join" and len(parts) >= 3:
+        group_name = parts[2].strip().lower()
+        group = db.query(HouseholdGroup).filter_by(name=group_name).first()
+        if not group:
+            send_whatsapp(number, f"Group '{group_name}' not found. Create it with *group create {group_name}*")
+            return
+        prefs = db.query(UserPreferences).filter_by(user_id=number).first()
+        if prefs:
+            prefs.group_id = group.id
+            db.commit()
+        send_whatsapp(number, f"Joined group *{group_name}* ✅")
+
+    elif sub == "info":
+        prefs = db.query(UserPreferences).filter_by(user_id=number).first()
+        if not prefs or not prefs.group_id:
+            send_whatsapp(number, "You're not in a group. Use *group create [name]* or *group join [name]*")
+            return
+        group = db.query(HouseholdGroup).get(prefs.group_id)
+        members = db.query(UserPreferences).filter_by(group_id=prefs.group_id).all()
+        names = [m.display_name for m in members]
+        send_whatsapp(number, f"*Group:* {group.name}\n*Members:* {', '.join(names)}")
+
+    else:
+        send_whatsapp(number, "Usage:\n• *group create [name]*\n• *group join [name]*\n• *group info*")
 
 
 def _handle_suggest(db: Session, number: str, text: str):
@@ -684,7 +758,7 @@ def _handle_favorites(db: Session, number: str, text: str):
     """Handle 'fav [meal]' — add a favorite, or list all favorites."""
     from app.models import UserPreferences
 
-    prefs = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    prefs = db.query(UserPreferences).filter_by(user_id=number).first()
     if not prefs:
         send_whatsapp(number, "Send *hi* first to register.")
         return
@@ -730,7 +804,7 @@ def _handle_dislikes(db: Session, number: str, text: str):
     """Handle 'dislike [item]' — add a dislike, or list all dislikes."""
     from app.models import UserPreferences
 
-    prefs = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    prefs = db.query(UserPreferences).filter_by(user_id=number).first()
     if not prefs:
         send_whatsapp(number, "Send *hi* first to register.")
         return
@@ -776,7 +850,7 @@ def _handle_away(db: Session, number: str, text: str):
     from datetime import timedelta
     from app.models import UserPreferences
 
-    prefs = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    prefs = db.query(UserPreferences).filter_by(user_id=number).first()
     if not prefs:
         send_whatsapp(number, "Send *hi* first to register.")
         return
@@ -856,7 +930,7 @@ def _handle_back(db: Session, number: str):
     """Handle 'back' — clear away dates."""
     from app.models import UserPreferences
 
-    prefs = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    prefs = db.query(UserPreferences).filter_by(user_id=number).first()
     if not prefs:
         send_whatsapp(number, "Send *hi* first to register.")
         return
@@ -922,7 +996,7 @@ def _handle_skip(db: Session, number: str, text: str):
 
     # Upsert skip record
     existing = db.query(MealSkip).filter(
-        MealSkip.whatsapp_number == number,
+        MealSkip.user_id == number,
         MealSkip.skip_date == target,
     ).first()
 
@@ -930,7 +1004,7 @@ def _handle_skip(db: Session, number: str, text: str):
         existing.meal_types_json = json.dumps(skipped_meals)
     else:
         skip = MealSkip(
-            whatsapp_number=number,
+            user_id=number,
             skip_date=target,
             meal_types_json=json.dumps(skipped_meals),
         )
@@ -947,7 +1021,7 @@ def _handle_set_name(db: Session, number: str, text: str):
     """Handle 'name [your name]' — set display name."""
     from app.models import UserPreferences
 
-    prefs = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    prefs = db.query(UserPreferences).filter_by(user_id=number).first()
     if not prefs:
         send_whatsapp(number, "Send *hi* first to register.")
         return

@@ -54,7 +54,7 @@ def seed():
         # Seed default user preferences if none exist
         if not db.query(UserPreferences).first():
             prefs = UserPreferences(
-                whatsapp_number=settings.user_whatsapp_number or "whatsapp:+910000000000",
+                user_id=settings.user_whatsapp_number or "whatsapp:+910000000000",
                 family_size=settings.family_size,
                 spice_level="medium",
                 cuisine_preference="indian_vegetarian",

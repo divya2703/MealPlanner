@@ -57,7 +57,7 @@ def test_set_state_replaces_existing(db):
     _set_state(db, NUMBER, "weekly_plan", "step1", {})
     _set_state(db, NUMBER, "swap", "step2", {"key": "val"})
 
-    states = db.query(ConversationState).filter_by(whatsapp_number=NUMBER).all()
+    states = db.query(ConversationState).filter_by(user_id=NUMBER).all()
     assert len(states) == 1
     assert states[0].flow_name == "swap"
 

@@ -20,7 +20,7 @@ from app.models import (
 
 
 def test_user_preferences_defaults(db):
-    prefs = UserPreferences(whatsapp_number="whatsapp:+911234567890")
+    prefs = UserPreferences(user_id="whatsapp:+911234567890")
     db.add(prefs)
     db.commit()
     db.refresh(prefs)
@@ -35,7 +35,7 @@ def test_user_preferences_defaults(db):
 
 def test_user_preferences_json_properties(db):
     prefs = UserPreferences(
-        whatsapp_number="whatsapp:+911234567890",
+        user_id="whatsapp:+911234567890",
         dislikes_json=json.dumps(["bitter gourd", "karela"]),
         favorites_json=json.dumps(["paneer butter masala"]),
     )
@@ -167,7 +167,7 @@ def test_grocery_list_with_items(db):
 
 def test_conversation_state_context(db):
     cs = ConversationState(
-        whatsapp_number="whatsapp:+911234567890",
+        user_id="whatsapp:+911234567890",
         flow_name="weekly_plan",
         step="awaiting_approval",
     )

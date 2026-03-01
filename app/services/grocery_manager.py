@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 SWIGGY_SEARCH_URL = "https://www.swiggy.com/instamart/search?query={query}"
 
 
-def generate_grocery_list(db: Session, weekly_plan: WeeklyPlan) -> GroceryList | None:
+def generate_grocery_list(db: Session, weekly_plan: WeeklyPlan, group_id: int | None = None) -> GroceryList | None:
     """Generate a grocery list for an approved weekly plan using Claude."""
     # Collect all meal names from the plan
     meals = []
@@ -29,8 +29,11 @@ def generate_grocery_list(db: Session, weekly_plan: WeeklyPlan) -> GroceryList |
         for pm in daily.planned_meals:
             meals.append(pm.meal_name)
 
-    # Get current pantry items to exclude
-    pantry = db.query(PantryItem).filter(PantryItem.quantity > 0).all()
+    # Get current pantry items to exclude, filtered by group_id
+    pantry_query = db.query(PantryItem).filter(PantryItem.quantity > 0)
+    if group_id is not None:
+        pantry_query = pantry_query.filter(PantryItem.group_id == group_id)
+    pantry = pantry_query.all()
     pantry_items = [f"{p.name} ({p.quantity} {p.unit})" for p in pantry]
 
     items = extract_grocery_list(db, meals, pantry_items)
@@ -38,6 +41,7 @@ def generate_grocery_list(db: Session, weekly_plan: WeeklyPlan) -> GroceryList |
         return None
 
     grocery_list = GroceryList(weekly_plan_id=weekly_plan.id, status="pending")
+    grocery_list.group_id = group_id
     db.add(grocery_list)
     db.flush()
 
@@ -108,14 +112,26 @@ def format_swiggy_list(grocery_list: GroceryList) -> str:
     return "\n".join(lines)
 
 
-def get_daily_grocery(db: Session, target_date: date) -> list[dict] | None:
+def get_daily_grocery(db: Session, target_date: date, group_id: int | None = None) -> list[dict] | None:
     """Extract grocery list for a single day's meals using Gemini."""
-    daily = db.query(DailyPlan).filter(DailyPlan.plan_date == target_date).first()
+    if group_id is not None:
+        daily = (
+            db.query(DailyPlan)
+            .join(WeeklyPlan)
+            .filter(DailyPlan.plan_date == target_date, WeeklyPlan.group_id == group_id)
+            .first()
+        )
+    else:
+        daily = db.query(DailyPlan).filter(DailyPlan.plan_date == target_date).first()
     if not daily or not daily.planned_meals:
         return None
 
     meals = [pm.meal_name for pm in daily.planned_meals]
-    pantry = db.query(PantryItem).filter(PantryItem.quantity > 0).all()
+
+    pantry_query = db.query(PantryItem).filter(PantryItem.quantity > 0)
+    if group_id is not None:
+        pantry_query = pantry_query.filter(PantryItem.group_id == group_id)
+    pantry = pantry_query.all()
     pantry_items = [f"{p.name} ({p.quantity} {p.unit})" for p in pantry]
 
     return extract_grocery_list(db, meals, pantry_items)
@@ -175,17 +191,18 @@ def mark_items_bought(db: Session, grocery_list: GroceryList, item_names: list[s
     return matched
 
 
-def update_pantry(db: Session, item_name: str, quantity: float, unit: str) -> PantryItem:
+def update_pantry(db: Session, item_name: str, quantity: float, unit: str, group_id: int | None = None) -> PantryItem:
     """Update or create a pantry item."""
-    pantry_item = db.query(PantryItem).filter(
-        PantryItem.name.ilike(f"%{item_name}%")
-    ).first()
+    pantry_query = db.query(PantryItem).filter(PantryItem.name.ilike(f"%{item_name}%"))
+    if group_id is not None:
+        pantry_query = pantry_query.filter(PantryItem.group_id == group_id)
+    pantry_item = pantry_query.first()
 
     if pantry_item:
         pantry_item.quantity = quantity
         pantry_item.unit = unit
     else:
-        pantry_item = PantryItem(name=item_name, quantity=quantity, unit=unit)
+        pantry_item = PantryItem(name=item_name, quantity=quantity, unit=unit, group_id=group_id)
         db.add(pantry_item)
 
     db.commit()
@@ -193,11 +210,12 @@ def update_pantry(db: Session, item_name: str, quantity: float, unit: str) -> Pa
     return pantry_item
 
 
-def mark_depleted(db: Session, item_name: str) -> PantryItem | None:
+def mark_depleted(db: Session, item_name: str, group_id: int | None = None) -> PantryItem | None:
     """Mark a pantry item as depleted (quantity = 0)."""
-    pantry_item = db.query(PantryItem).filter(
-        PantryItem.name.ilike(f"%{item_name}%")
-    ).first()
+    pantry_query = db.query(PantryItem).filter(PantryItem.name.ilike(f"%{item_name}%"))
+    if group_id is not None:
+        pantry_query = pantry_query.filter(PantryItem.group_id == group_id)
+    pantry_item = pantry_query.first()
 
     if pantry_item:
         pantry_item.quantity = 0
@@ -206,38 +224,55 @@ def mark_depleted(db: Session, item_name: str) -> PantryItem | None:
     return pantry_item
 
 
-def get_low_stock_items(db: Session) -> list[PantryItem]:
+def get_low_stock_items(db: Session, group_id: int | None = None) -> list[PantryItem]:
     """Get pantry items that are below their low threshold."""
-    return db.query(PantryItem).filter(
+    query = db.query(PantryItem).filter(
         PantryItem.quantity <= PantryItem.low_threshold,
         PantryItem.low_threshold > 0,
-    ).all()
-
-
-def get_current_grocery_list(db: Session) -> GroceryList | None:
-    """Get the most recent pending grocery list."""
-    return (
-        db.query(GroceryList)
-        .filter(GroceryList.status == "pending")
-        .order_by(GroceryList.created_at.desc())
-        .first()
     )
+    if group_id is not None:
+        query = query.filter(PantryItem.group_id == group_id)
+    return query.all()
 
 
-def get_today_meals(db: Session) -> list[PlannedMeal]:
+def get_current_grocery_list(db: Session, group_id: int | None = None) -> GroceryList | None:
+    """Get the most recent pending grocery list."""
+    query = db.query(GroceryList).filter(GroceryList.status == "pending")
+    if group_id is not None:
+        query = query.filter(GroceryList.group_id == group_id)
+    return query.order_by(GroceryList.created_at.desc()).first()
+
+
+def get_today_meals(db: Session, group_id: int | None = None) -> list[PlannedMeal]:
     """Get today's planned meals."""
     today = date.today()
-    daily = db.query(DailyPlan).filter(DailyPlan.plan_date == today).first()
+    if group_id is not None:
+        daily = (
+            db.query(DailyPlan)
+            .join(WeeklyPlan)
+            .filter(DailyPlan.plan_date == today, WeeklyPlan.group_id == group_id)
+            .first()
+        )
+    else:
+        daily = db.query(DailyPlan).filter(DailyPlan.plan_date == today).first()
     if not daily:
         return []
     return sorted(daily.planned_meals, key=lambda m: ["breakfast", "lunch", "dinner"].index(m.meal_type))
 
 
-def get_tomorrow_meals(db: Session) -> list[PlannedMeal]:
+def get_tomorrow_meals(db: Session, group_id: int | None = None) -> list[PlannedMeal]:
     """Get tomorrow's planned meals."""
     from datetime import timedelta
     tomorrow = date.today() + timedelta(days=1)
-    daily = db.query(DailyPlan).filter(DailyPlan.plan_date == tomorrow).first()
+    if group_id is not None:
+        daily = (
+            db.query(DailyPlan)
+            .join(WeeklyPlan)
+            .filter(DailyPlan.plan_date == tomorrow, WeeklyPlan.group_id == group_id)
+            .first()
+        )
+    else:
+        daily = db.query(DailyPlan).filter(DailyPlan.plan_date == tomorrow).first()
     if not daily:
         return []
     return sorted(daily.planned_meals, key=lambda m: ["breakfast", "lunch", "dinner"].index(m.meal_type))

@@ -19,7 +19,7 @@ def test_get_user_prefs_creates_default(db):
 
 
 def test_get_user_prefs_returns_existing(db):
-    existing = UserPreferences(whatsapp_number="whatsapp:+91999", family_size=5, spice_level="spicy")
+    existing = UserPreferences(user_id="whatsapp:+91999", family_size=5, spice_level="spicy")
     db.add(existing)
     db.commit()
 

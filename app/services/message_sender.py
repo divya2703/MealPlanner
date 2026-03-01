@@ -1,4 +1,4 @@
-"""Twilio outbound WhatsApp messaging with message splitting."""
+"""Multi-platform outbound messaging with message splitting."""
 
 import logging
 
@@ -8,21 +8,21 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# WhatsApp message limit is 1600 characters
 MAX_WHATSAPP_LENGTH = 1500
+MAX_TELEGRAM_LENGTH = 4096
 
-_client: Client | None = None
+_twilio_client: Client | None = None
 
 
-def _get_client() -> Client:
-    global _client
-    if _client is None:
-        _client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
-    return _client
+def _get_twilio_client() -> Client:
+    global _twilio_client
+    if _twilio_client is None:
+        _twilio_client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
+    return _twilio_client
 
 
 def split_message(text: str, max_length: int = MAX_WHATSAPP_LENGTH) -> list[str]:
-    """Split a long message into chunks that fit WhatsApp limits.
+    """Split a long message into chunks.
 
     Tries to split on double-newlines (paragraph boundaries) first,
     then single newlines, then by character limit.
@@ -38,15 +38,12 @@ def split_message(text: str, max_length: int = MAX_WHATSAPP_LENGTH) -> list[str]
             chunks.append(remaining)
             break
 
-        # Try to find a good split point
         split_at = max_length
 
-        # Prefer splitting at double newline
         double_nl = remaining.rfind("\n\n", 0, max_length)
         if double_nl > max_length // 2:
             split_at = double_nl + 2
         else:
-            # Try single newline
             single_nl = remaining.rfind("\n", 0, max_length)
             if single_nl > max_length // 2:
                 split_at = single_nl + 1
@@ -57,23 +54,24 @@ def split_message(text: str, max_length: int = MAX_WHATSAPP_LENGTH) -> list[str]
     return chunks
 
 
-def send_whatsapp(to: str, body: str) -> bool:
-    """Send a WhatsApp message, splitting if necessary.
+def send_message(user_id: str, body: str) -> bool:
+    """Unified send — dispatches to WhatsApp or Telegram based on user_id prefix."""
+    if user_id.startswith("tg:"):
+        chat_id = user_id.removeprefix("tg:")
+        return _send_telegram(chat_id, body)
+    else:
+        return _send_whatsapp(user_id, body)
 
-    Args:
-        to: WhatsApp number in format 'whatsapp:+91XXXXXXXXXX'
-        body: Message text
 
-    Returns:
-        True if all message parts were sent successfully.
-    """
-    client = _get_client()
+def _send_whatsapp(to: str, body: str) -> bool:
+    """Send a WhatsApp message via Twilio, splitting if necessary."""
+    client = _get_twilio_client()
     parts = split_message(body)
 
     for i, part in enumerate(parts):
         try:
-            if len(parts) > 1:
-                part = f"({i + 1}/{len(parts)})\n{part}" if i > 0 else part
+            if len(parts) > 1 and i > 0:
+                part = f"({i + 1}/{len(parts)})\n{part}"
 
             message = client.messages.create(
                 from_=settings.twilio_whatsapp_from,
@@ -88,6 +86,34 @@ def send_whatsapp(to: str, body: str) -> bool:
     return True
 
 
-def send_to_user(body: str) -> bool:
-    """Send a WhatsApp message to the configured user."""
-    return send_whatsapp(settings.user_whatsapp_number, body)
+def _send_telegram(chat_id: str, body: str) -> bool:
+    """Send a Telegram message, splitting if necessary."""
+    if not settings.telegram_bot_token:
+        logger.warning("Telegram bot token not configured, skipping message")
+        return False
+
+    import httpx
+
+    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
+    parts = split_message(body, max_length=MAX_TELEGRAM_LENGTH)
+
+    for i, part in enumerate(parts):
+        try:
+            if len(parts) > 1 and i > 0:
+                part = f"({i + 1}/{len(parts)})\n{part}"
+
+            resp = httpx.post(url, json={"chat_id": int(chat_id), "text": part, "parse_mode": "Markdown"})
+            if resp.status_code == 200:
+                logger.info(f"Sent Telegram message to {chat_id} (part {i + 1}/{len(parts)})")
+            else:
+                logger.error(f"Telegram API error {resp.status_code}: {resp.text}")
+                return False
+        except Exception:
+            logger.exception(f"Failed to send Telegram message to {chat_id}")
+            return False
+
+    return True
+
+
+# Backwards-compatible alias
+send_whatsapp = send_message
