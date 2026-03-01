@@ -51,56 +51,115 @@ Commands:
 • *help* — Show this menu"""
 
 
+def _ensure_user_registered(db: Session, number: str):
+    """Auto-register a user if they message the bot for the first time."""
+    from app.models import UserPreferences
+    from app.config import settings
+
+    existing = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    if not existing:
+        prefs = UserPreferences(
+            whatsapp_number=number,
+            family_size=settings.family_size,
+        )
+        db.add(prefs)
+        db.commit()
+        logger.info(f"Auto-registered new user: {number}")
+
+
 def handle_message(db: Session, from_number: str, body: str) -> None:
     """Main entry point: route an incoming WhatsApp message."""
     text = body.strip()
 
-    # Check for active conversation flow first
+    # Auto-register user on first message
+    _ensure_user_registered(db, from_number)
+
+    # Keyword-based intent detection — these work regardless of active flow
+    lower = text.lower().strip()
+
+    if lower in ("help", "hi", "hello", "hey"):
+        send_whatsapp(from_number, HELP_TEXT)
+        return
+
+    if lower in ("today", "today's meals", "todays meals"):
+        _handle_today(db, from_number)
+        return
+
+    if lower in ("tomorrow", "tomorrow's meals", "tomorrows meals"):
+        _handle_tomorrow(db, from_number)
+        return
+
+    if lower in ("grocery", "list", "grocery list", "shopping list"):
+        _handle_grocery_list(db, from_number)
+        return
+
+    if lower in ("swiggy", "instamart", "swiggy list"):
+        _handle_swiggy_list(db, from_number)
+        return
+
+    if lower == "bought" or lower.startswith("bought "):
+        _handle_bought(db, from_number, lower)
+        return
+
+    if lower == "out of" or lower.startswith("out of "):
+        _handle_out_of(db, from_number, lower)
+        return
+
+    if lower.startswith("rate "):
+        _handle_rate(db, from_number, lower)
+        return
+
+    if lower.startswith("suggest"):
+        _handle_suggest(db, from_number, lower)
+        return
+
+    # Check for active conversation flow
     state = _get_active_state(db, from_number)
     if state:
         _handle_flow(db, from_number, text, state)
         return
 
-    # Keyword-based intent detection
-    lower = text.lower().strip()
-
-    if lower in ("help", "hi", "hello", "hey"):
-        send_whatsapp(from_number, HELP_TEXT)
-
-    elif lower in ("plan", "meal plan", "weekly plan", "new plan"):
+    # Commands that start new flows
+    if lower in ("plan", "meal plan", "weekly plan", "new plan"):
         _start_weekly_plan_flow(db, from_number)
-
-    elif lower in ("today", "today's meals", "todays meals"):
-        _handle_today(db, from_number)
-
-    elif lower in ("tomorrow", "tomorrow's meals", "tomorrows meals"):
-        _handle_tomorrow(db, from_number)
 
     elif lower.startswith("swap "):
         _start_swap_flow(db, from_number, lower)
 
-    elif lower in ("grocery", "list", "grocery list", "shopping list"):
-        _handle_grocery_list(db, from_number)
-
-    elif lower in ("swiggy", "instamart", "swiggy list"):
-        _handle_swiggy_list(db, from_number)
-
-    elif lower == "bought" or lower.startswith("bought "):
-        _handle_bought(db, from_number, lower)
-
-    elif lower == "out of" or lower.startswith("out of "):
-        _handle_out_of(db, from_number, lower)
-
-    elif lower.startswith("rate "):
-        _handle_rate(db, from_number, lower)
-
-    elif lower.startswith("suggest"):
-        _handle_suggest(db, from_number, lower)
-
     else:
-        # Freeform fallback via Claude
-        response = meal_planner.get_freeform_response(text)
-        send_whatsapp(from_number, response)
+        # Use Gemini intent detection for natural language
+        try:
+            intent = meal_planner.detect_intent(text)
+            intent_name = intent.get("intent", "other")
+
+            if intent_name == "approve":
+                send_whatsapp(from_number, "No active plan to approve. Send *plan* to create one.")
+            elif intent_name == "regenerate":
+                _start_weekly_plan_flow(db, from_number)
+            elif intent_name == "swap":
+                day = intent.get("day", "")
+                meal_type = intent.get("meal_type", "dinner")
+                if day:
+                    _start_swap_flow(db, from_number, f"swap {day} {meal_type}")
+                else:
+                    send_whatsapp(from_number, "Which day do you want to swap? E.g., *swap monday dinner*")
+            elif intent_name == "today":
+                _handle_today(db, from_number)
+            elif intent_name == "tomorrow":
+                _handle_tomorrow(db, from_number)
+            elif intent_name == "grocery":
+                _handle_grocery_list(db, from_number)
+            elif intent_name == "suggest":
+                _handle_suggest(db, from_number, text)
+            elif intent_name == "help":
+                send_whatsapp(from_number, HELP_TEXT)
+            else:
+                response = meal_planner.get_freeform_response(text)
+                send_whatsapp(from_number, response)
+        except Exception:
+            logger.exception("Intent detection failed, using freeform")
+            response = meal_planner.get_freeform_response(text)
+            send_whatsapp(from_number, response)
 
 
 # --- Conversation State Management ---
@@ -215,7 +274,28 @@ def _weekly_plan_flow(db: Session, number: str, text: str, state: ConversationSt
             _start_swap_flow(db, number, lower)
 
         else:
-            send_whatsapp(number, "Reply *1* to approve, *2* to regenerate, or *swap [day] [meal]* to change a specific meal.")
+            # Try intent detection for natural language during plan approval
+            try:
+                intent = meal_planner.detect_intent(text)
+                intent_name = intent.get("intent", "other")
+
+                if intent_name == "approve":
+                    # Re-trigger approval
+                    _weekly_plan_flow(db, number, "1", state)
+                elif intent_name == "regenerate":
+                    _weekly_plan_flow(db, number, "2", state)
+                elif intent_name == "swap":
+                    day = intent.get("day", "")
+                    meal_type = intent.get("meal_type", "dinner")
+                    if day:
+                        _clear_state(db, number)
+                        _start_swap_flow(db, number, f"swap {day} {meal_type}")
+                    else:
+                        send_whatsapp(number, "Which day and meal? E.g., *swap friday dinner*")
+                else:
+                    send_whatsapp(number, "Reply *1* to approve, *2* to regenerate, or *swap [day] [meal]* to change a specific meal.")
+            except Exception:
+                send_whatsapp(number, "Reply *1* to approve, *2* to regenerate, or *swap [day] [meal]* to change a specific meal.")
 
 
 def _start_swap_flow(db: Session, number: str, text: str):
