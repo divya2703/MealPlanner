@@ -58,8 +58,8 @@ HELP_TEXT = """*Meal Planning Bot* 🍽️
 
 *Profile*
 • *name Priya* — Set your name
-• *away april* — Away for a month
-• *away 2 weeks* — Away for 2 weeks
+• *skip tomorrow breakfast lunch* — Skip meals
+• *away april* — Away for a period
 • *back* — Mark yourself returned
 
 _New here? Set up with:_
@@ -151,6 +151,10 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
 
     if lower.startswith("dislike ") or lower == "dislikes":
         _handle_dislikes(db, from_number, lower)
+        return
+
+    if lower.startswith("skip ") or lower == "skip":
+        _handle_skip(db, from_number, lower)
         return
 
     if lower.startswith("away ") or lower == "away":
@@ -861,6 +865,82 @@ def _handle_back(db: Session, number: str):
     prefs.away_until = None
     db.commit()
     send_whatsapp(number, "Welcome back! 🏠 Your preferences will be included in future meal plans.")
+
+
+def _handle_skip(db: Session, number: str, text: str):
+    """Handle 'skip [day] [meals]' — skip specific meals on a day.
+
+    Examples:
+        skip tomorrow breakfast lunch
+        skip monday dinner
+        skip today
+    """
+    from app.models import MealSkip
+
+    args = text.replace("skip", "", 1).strip().lower()
+    if not args:
+        send_whatsapp(number, "Usage:\n• *skip tomorrow breakfast lunch*\n• *skip monday dinner*\n• *skip today* (all meals)")
+        return
+
+    parts = args.split()
+
+    # Parse the day
+    day_input = parts[0]
+    today = date.today()
+
+    if day_input == "today":
+        target = today
+    elif day_input == "tomorrow":
+        target = today + timedelta(days=1)
+    elif day_input in DAY_MAP:
+        target_day = DAY_MAP[day_input]
+        # Find next occurrence of that day
+        day_idx = DAY_ORDER.index(target_day)
+        days_ahead = (day_idx - today.weekday()) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        target = today + timedelta(days=days_ahead)
+    else:
+        send_whatsapp(number, f"Couldn't understand '{day_input}'. Use: today, tomorrow, or a day name.")
+        return
+
+    # Parse which meals to skip
+    meal_parts = parts[1:]
+    if not meal_parts:
+        # Skip all meals
+        skipped_meals = ["breakfast", "lunch", "dinner"]
+    else:
+        skipped_meals = []
+        for m in meal_parts:
+            if m in MEAL_TYPE_MAP:
+                skipped_meals.append(MEAL_TYPE_MAP[m])
+            elif m in ("and", "&", ","):
+                continue
+            else:
+                send_whatsapp(number, f"Couldn't understand meal '{m}'. Use: breakfast, lunch, dinner.")
+                return
+
+    # Upsert skip record
+    existing = db.query(MealSkip).filter(
+        MealSkip.whatsapp_number == number,
+        MealSkip.skip_date == target,
+    ).first()
+
+    if existing:
+        existing.meal_types_json = json.dumps(skipped_meals)
+    else:
+        skip = MealSkip(
+            whatsapp_number=number,
+            skip_date=target,
+            meal_types_json=json.dumps(skipped_meals),
+        )
+        db.add(skip)
+
+    db.commit()
+
+    day_label = target.strftime("%A, %d %b")
+    meals_label = ", ".join(skipped_meals)
+    send_whatsapp(number, f"Skipping *{meals_label}* on *{day_label}* 🚫\nYour dislikes won't affect those meals.")
 
 
 def _handle_set_name(db: Session, number: str, text: str):

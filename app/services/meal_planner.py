@@ -138,6 +138,8 @@ def _get_user_prefs(db: Session) -> UserPreferences:
 
 def _get_household_context(db: Session, week_start: date) -> str:
     """Build context about who's home and their preferences for each day of the week."""
+    from app.models import MealSkip
+
     all_users = db.query(UserPreferences).all()
     if len(all_users) <= 1:
         return ""
@@ -145,17 +147,45 @@ def _get_household_context(db: Session, week_start: date) -> str:
     lines = ["\n## Household Members"]
     for user in all_users:
         name = user.display_name
-        home_days = []
-        away_days = []
+        day_details = []
         for i in range(7):
             day_date = week_start + timedelta(days=i)
             day_name = day_date.strftime("%A")
-            if user.is_home(day_date):
-                home_days.append(day_name)
-            else:
-                away_days.append(day_name)
 
-        status = "home all week" if len(home_days) == 7 else f"home: {', '.join(home_days)}" if home_days else "away all week"
+            if not user.is_home(day_date):
+                day_details.append((day_name, "away"))
+                continue
+
+            # Check for meal-level skips
+            skip = db.query(MealSkip).filter(
+                MealSkip.whatsapp_number == user.whatsapp_number,
+                MealSkip.skip_date == day_date,
+            ).first()
+
+            if skip:
+                skipped = skip.meal_types
+                present_meals = [m for m in ["breakfast", "lunch", "dinner"] if m not in skipped]
+                if not present_meals:
+                    day_details.append((day_name, "away"))
+                else:
+                    day_details.append((day_name, f"only {', '.join(present_meals)}"))
+            else:
+                day_details.append((day_name, "home"))
+
+        home_all = all(s == "home" for _, s in day_details)
+        away_all = all(s == "away" for _, s in day_details)
+
+        if home_all:
+            status = "home all week"
+        elif away_all:
+            status = "away all week"
+        else:
+            parts = []
+            for day_name, s in day_details:
+                if s != "home":
+                    parts.append(f"{day_name}: {s}")
+            status = "home all week except — " + "; ".join(parts) if parts else "home all week"
+
         dislikes = user.dislikes
         favs = user.favorites
 
@@ -166,10 +196,10 @@ def _get_household_context(db: Session, week_start: date) -> str:
             lines.append(f"  Favorites: {', '.join(favs)}")
 
     lines.append("")
-    lines.append("IMPORTANT: If a meal conflicts with a household member's dislike and they are home that day, "
+    lines.append("IMPORTANT: If a meal conflicts with a household member's dislike and they are present for that meal, "
                  "add a simple alternative for them in parentheses after the meal name. "
                  'For example: "Aloo Paratha (+ Khichdi for Priya)". '
-                 "If the person is away that day, no alternative is needed.")
+                 "If the person is away or skipping that meal, no alternative is needed.")
     return "\n".join(lines)
 
 

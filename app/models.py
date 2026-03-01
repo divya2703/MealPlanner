@@ -147,6 +147,22 @@ class PlannedMeal(Base):
     daily_plan: Mapped["DailyPlan"] = relationship(back_populates="planned_meals")
 
 
+# --- Meal Skips ---
+
+
+class MealSkip(Base):
+    __tablename__ = "meal_skips"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    whatsapp_number: Mapped[str] = mapped_column(String)
+    skip_date: Mapped[date] = mapped_column(Date)
+    meal_types_json: Mapped[str] = mapped_column(Text, default='["breakfast", "lunch", "dinner"]')
+
+    @property
+    def meal_types(self) -> list[str]:
+        return json.loads(self.meal_types_json)
+
+
 # --- History & Ratings ---
 
 
