@@ -55,6 +55,9 @@ Commands:
 • *fav remove [meal]* — Remove a favorite
 • *dislike [item]* — Exclude from plans (e.g., dislike bitter gourd)
 • *dislikes* — View your dislikes
+• *name [your name]* — Set your display name
+• *away [period]* — Mark yourself away (e.g., away march, away 2 weeks)
+• *back* — Mark yourself as returned
 • *help* — Show this menu"""
 
 
@@ -142,6 +145,18 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
 
     if lower.startswith("dislike ") or lower == "dislikes":
         _handle_dislikes(db, from_number, lower)
+        return
+
+    if lower.startswith("away ") or lower == "away":
+        _handle_away(db, from_number, lower)
+        return
+
+    if lower in ("back", "i'm back", "im back"):
+        _handle_back(db, from_number)
+        return
+
+    if lower.startswith("name "):
+        _handle_set_name(db, from_number, text)
         return
 
     # Check for active conversation flow
@@ -744,3 +759,118 @@ def _handle_dislikes(db: Session, number: str, text: str):
                 send_whatsapp(number, f"Added *{item}* to dislikes 🚫\nThis will be excluded from future plans.")
             else:
                 send_whatsapp(number, f"*{item}* is already in your dislikes.")
+
+
+def _handle_away(db: Session, number: str, text: str):
+    """Handle 'away [dates]' — mark user as away for a period."""
+    from datetime import timedelta
+    from app.models import UserPreferences
+
+    prefs = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    if not prefs:
+        send_whatsapp(number, "Send *hi* first to register.")
+        return
+
+    args = text.replace("away", "", 1).strip().lower()
+
+    if not args:
+        # Show current away status
+        if prefs.away_from and prefs.away_until:
+            send_whatsapp(number, f"You're marked away from *{prefs.away_from.strftime('%d %b')}* to *{prefs.away_until.strftime('%d %b')}*.\nSend *back* when you return.")
+        else:
+            send_whatsapp(number, "You're not marked as away.\nUsage: *away 2 weeks* or *away march* or *away 5 march to 31 march*")
+        return
+
+    today = date.today()
+
+    # Parse common patterns
+    if "month" in args or "next month" in args:
+        # Away for next month
+        if today.month == 12:
+            start = date(today.year + 1, 1, 1)
+            end = date(today.year + 1, 1, 31)
+        else:
+            import calendar
+            next_month = today.month + 1
+            year = today.year
+            last_day = calendar.monthrange(year, next_month)[1]
+            start = date(year, next_month, 1)
+            end = date(year, next_month, last_day)
+    elif "week" in args:
+        # "1 week", "2 weeks", etc.
+        try:
+            num = int(args.split()[0])
+        except (ValueError, IndexError):
+            num = 1
+        start = today
+        end = today + timedelta(weeks=num)
+    elif " to " in args:
+        # "5 march to 31 march"
+        import dateutil.parser as dp
+        try:
+            parts = args.split(" to ")
+            start = dp.parse(parts[0], dayfirst=True).date()
+            end = dp.parse(parts[1], dayfirst=True).date()
+            # If year not specified and date is in the past, assume next year
+            if start < today:
+                start = start.replace(year=today.year + 1)
+                end = end.replace(year=today.year + 1)
+        except Exception:
+            send_whatsapp(number, "Couldn't parse dates. Try: *away 1 march to 31 march* or *away 2 weeks*")
+            return
+    else:
+        # Try parsing as a month name: "away march"
+        import calendar
+        month_names = {name.lower(): i for i, name in enumerate(calendar.month_name) if i}
+        month_abbr = {name.lower(): i for i, name in enumerate(calendar.month_abbr) if i}
+        month_map = {**month_names, **month_abbr}
+
+        if args in month_map:
+            month_num = month_map[args]
+            year = today.year if month_num >= today.month else today.year + 1
+            last_day = calendar.monthrange(year, month_num)[1]
+            start = date(year, month_num, 1)
+            end = date(year, month_num, last_day)
+        else:
+            send_whatsapp(number, "Usage: *away march* or *away 2 weeks* or *away 5 march to 31 march*")
+            return
+
+    prefs.away_from = start
+    prefs.away_until = end
+    db.commit()
+
+    send_whatsapp(number, f"Marked you as away from *{start.strftime('%d %b')}* to *{end.strftime('%d %b')}* ✈️\nYour dislikes won't affect meal plans during this time.\nSend *back* when you return.")
+
+
+def _handle_back(db: Session, number: str):
+    """Handle 'back' — clear away dates."""
+    from app.models import UserPreferences
+
+    prefs = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    if not prefs:
+        send_whatsapp(number, "Send *hi* first to register.")
+        return
+
+    prefs.away_from = None
+    prefs.away_until = None
+    db.commit()
+    send_whatsapp(number, "Welcome back! 🏠 Your preferences will be included in future meal plans.")
+
+
+def _handle_set_name(db: Session, number: str, text: str):
+    """Handle 'name [your name]' — set display name."""
+    from app.models import UserPreferences
+
+    prefs = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    if not prefs:
+        send_whatsapp(number, "Send *hi* first to register.")
+        return
+
+    name = text.split(maxsplit=1)[1].strip() if " " in text else ""
+    if not name:
+        send_whatsapp(number, f"Your name is: *{prefs.display_name}*\nChange it with: *name Priya*")
+        return
+
+    prefs.name = name
+    db.commit()
+    send_whatsapp(number, f"Name set to *{name}* ✅")

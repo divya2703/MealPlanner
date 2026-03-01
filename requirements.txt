@@ -6,3 +6,4 @@ sqlalchemy==2.0.47
 apscheduler==3.11.2
 pydantic-settings==2.13.1
 python-multipart==0.0.22
+python-dateutil==2.9.0.post0

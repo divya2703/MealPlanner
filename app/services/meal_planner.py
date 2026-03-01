@@ -136,10 +136,67 @@ def _get_user_prefs(db: Session) -> UserPreferences:
     return prefs
 
 
+def _get_household_context(db: Session, week_start: date) -> str:
+    """Build context about who's home and their preferences for each day of the week."""
+    all_users = db.query(UserPreferences).all()
+    if len(all_users) <= 1:
+        return ""
+
+    lines = ["\n## Household Members"]
+    for user in all_users:
+        name = user.display_name
+        home_days = []
+        away_days = []
+        for i in range(7):
+            day_date = week_start + timedelta(days=i)
+            day_name = day_date.strftime("%A")
+            if user.is_home(day_date):
+                home_days.append(day_name)
+            else:
+                away_days.append(day_name)
+
+        status = "home all week" if len(home_days) == 7 else f"home: {', '.join(home_days)}" if home_days else "away all week"
+        dislikes = user.dislikes
+        favs = user.favorites
+
+        lines.append(f"- **{name}**: {status}")
+        if dislikes:
+            lines.append(f"  Dislikes: {', '.join(dislikes)}")
+        if favs:
+            lines.append(f"  Favorites: {', '.join(favs)}")
+
+    lines.append("")
+    lines.append("IMPORTANT: If a meal conflicts with a household member's dislike and they are home that day, "
+                 "add a simple alternative for them in parentheses after the meal name. "
+                 'For example: "Aloo Paratha (+ Khichdi for Priya)". '
+                 "If the person is away that day, no alternative is needed.")
+    return "\n".join(lines)
+
+
 def generate_weekly_plan(db: Session) -> WeeklyPlan | None:
     """Generate a 7-day meal plan using Gemini."""
     prefs = _get_user_prefs(db)
     recent_meals = _get_recent_meals(db)
+
+    # Gather all household favorites and dislikes
+    all_users = db.query(UserPreferences).all()
+    all_favorites = []
+    all_dislikes = []
+    for u in all_users:
+        all_favorites.extend(u.favorites)
+        if u.is_home():
+            all_dislikes.extend(u.dislikes)
+
+    # Calculate week start for household context
+    today = date.today()
+    days_until_monday = (7 - today.weekday()) % 7
+    if days_until_monday == 0:
+        days_until_monday = 7
+    week_start = today + timedelta(days=days_until_monday)
+    if today.weekday() == 6:
+        week_start = today + timedelta(days=1)
+
+    household_context = _get_household_context(db, week_start)
 
     system_prompt = WEEKLY_PLAN_SYSTEM_PROMPT.format(
         family_size=prefs.family_size,
@@ -147,10 +204,10 @@ def generate_weekly_plan(db: Session) -> WeeklyPlan | None:
         seasonal_veggies=get_seasonal_veggies(),
         max_prep_time=prefs.max_prep_time_minutes,
         spice_level=prefs.spice_level,
-        dislikes=", ".join(prefs.dislikes) or "none",
-        favorites=", ".join(prefs.favorites) or "none specified",
+        dislikes=", ".join(set(all_dislikes)) or "none",
+        favorites=", ".join(set(all_favorites)) or "none specified",
         recent_meals=", ".join(recent_meals) or "none",
-    )
+    ) + household_context
 
     tool = types.Tool(function_declarations=[WEEKLY_PLAN_FUNC])
     config = types.GenerateContentConfig(
@@ -184,16 +241,7 @@ def generate_weekly_plan(db: Session) -> WeeklyPlan | None:
 
     parsed = ClaudeMealPlan(days=days_list)
 
-    # Calculate week start (next Monday)
-    today = date.today()
-    days_until_monday = (7 - today.weekday()) % 7
-    if days_until_monday == 0:
-        days_until_monday = 7
-    week_start = today + timedelta(days=days_until_monday)
-    # If today is Sunday and we're generating, start tomorrow (Monday)
-    if today.weekday() == 6:
-        week_start = today + timedelta(days=1)
-
+    # week_start already calculated above
     weekly_plan = WeeklyPlan(week_start=week_start, status="draft")
     db.add(weekly_plan)
     db.flush()

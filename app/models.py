@@ -25,12 +25,15 @@ class UserPreferences(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     whatsapp_number: Mapped[str] = mapped_column(String, unique=True)
+    name: Mapped[str] = mapped_column(String, default="")
     family_size: Mapped[int] = mapped_column(Integer, default=3)
     spice_level: Mapped[str] = mapped_column(String, default="medium")  # mild/medium/spicy
     cuisine_preference: Mapped[str] = mapped_column(String, default="indian_vegetarian")
     max_prep_time_minutes: Mapped[int] = mapped_column(Integer, default=60)
     dislikes_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON list
     favorites_json: Mapped[str] = mapped_column(Text, default="[]")  # JSON list
+    away_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    away_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     @property
@@ -40,6 +43,17 @@ class UserPreferences(Base):
     @property
     def favorites(self) -> list[str]:
         return json.loads(self.favorites_json)
+
+    def is_home(self, check_date: date | None = None) -> bool:
+        if check_date is None:
+            check_date = date.today()
+        if self.away_from and self.away_until:
+            return not (self.away_from <= check_date <= self.away_until)
+        return True
+
+    @property
+    def display_name(self) -> str:
+        return self.name or self.whatsapp_number.replace("whatsapp:", "")
 
 
 # --- Meal & Ingredient Catalog ---
