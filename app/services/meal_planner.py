@@ -69,10 +69,13 @@ WEEKLY_PLAN_FUNC = types.FunctionDeclaration(
                     properties={
                         "day": types.Schema(type="STRING", description="Day of week: monday/tuesday/.../sunday"),
                         "breakfast": types.Schema(type="STRING", description="Breakfast dish name"),
+                        "breakfast_calories": types.Schema(type="INTEGER", description="Estimated calories for breakfast (per person)"),
                         "lunch": types.Schema(type="STRING", description="Lunch dish name"),
+                        "lunch_calories": types.Schema(type="INTEGER", description="Estimated calories for lunch (per person)"),
                         "dinner": types.Schema(type="STRING", description="Dinner dish name"),
+                        "dinner_calories": types.Schema(type="INTEGER", description="Estimated calories for dinner (per person)"),
                     },
-                    required=["day", "breakfast", "lunch", "dinner"],
+                    required=["day", "breakfast", "breakfast_calories", "lunch", "lunch_calories", "dinner", "dinner_calories"],
                 ),
             ),
         },
@@ -298,8 +301,11 @@ def generate_weekly_plan(db: Session, group_id: int | None = None) -> WeeklyPlan
         days_list.append({
             "day": str(day["day"]),
             "breakfast": str(day["breakfast"]),
+            "breakfast_calories": int(day.get("breakfast_calories", 0) or 0),
             "lunch": str(day["lunch"]),
+            "lunch_calories": int(day.get("lunch_calories", 0) or 0),
             "dinner": str(day["dinner"]),
+            "dinner_calories": int(day.get("dinner_calories", 0) or 0),
         })
 
     parsed = ClaudeMealPlan(days=days_list)
@@ -316,15 +322,16 @@ def generate_weekly_plan(db: Session, group_id: int | None = None) -> WeeklyPlan
         db.add(daily)
         db.flush()
 
-        for meal_type, meal_name in [
-            ("breakfast", day_plan.breakfast),
-            ("lunch", day_plan.lunch),
-            ("dinner", day_plan.dinner),
+        for meal_type, meal_name, cals in [
+            ("breakfast", day_plan.breakfast, day_plan.breakfast_calories),
+            ("lunch", day_plan.lunch, day_plan.lunch_calories),
+            ("dinner", day_plan.dinner, day_plan.dinner_calories),
         ]:
             pm = PlannedMeal(
                 daily_plan_id=daily.id,
                 meal_type=meal_type,
                 meal_name=meal_name,
+                estimated_calories=cals or None,
             )
             db.add(pm)
 
@@ -513,9 +520,14 @@ def format_weekly_plan(weekly_plan: WeeklyPlan) -> str:
         day_name = daily.plan_date.strftime("%A")
         date_str = daily.plan_date.strftime("%d %b")
         lines.append(f"*{day_name} ({date_str})*")
+        day_total = 0
         for pm in sorted(daily.planned_meals, key=lambda m: ["breakfast", "lunch", "dinner"].index(m.meal_type)):
             emoji = {"breakfast": "🌅", "lunch": "☀️", "dinner": "🌙"}.get(pm.meal_type, "🍽️")
-            lines.append(f"  {emoji} {pm.meal_type.title()}: {pm.meal_name}")
+            cal_str = f" ({pm.estimated_calories} kcal)" if pm.estimated_calories else ""
+            lines.append(f"  {emoji} {pm.meal_type.title()}: {pm.meal_name}{cal_str}")
+            day_total += pm.estimated_calories or 0
+        if day_total:
+            lines.append(f"  📊 _{day_total} kcal total_")
         lines.append("")
 
     lines.append("Reply *1* to approve, *2* to regenerate, or *swap [day] [meal]* to change a specific meal.")
@@ -526,7 +538,12 @@ def format_daily_meals(daily_plan: DailyPlan) -> str:
     """Format a single day's meals for WhatsApp display."""
     day_name = daily_plan.plan_date.strftime("%A, %d %b")
     lines = [f"*{day_name}*\n"]
+    day_total = 0
     for pm in sorted(daily_plan.planned_meals, key=lambda m: ["breakfast", "lunch", "dinner"].index(m.meal_type)):
         emoji = {"breakfast": "🌅", "lunch": "☀️", "dinner": "🌙"}.get(pm.meal_type, "🍽️")
-        lines.append(f"{emoji} *{pm.meal_type.title()}:* {pm.meal_name}")
+        cal_str = f" ({pm.estimated_calories} kcal)" if pm.estimated_calories else ""
+        lines.append(f"{emoji} *{pm.meal_type.title()}:* {pm.meal_name}{cal_str}")
+        day_total += pm.estimated_calories or 0
+    if day_total:
+        lines.append(f"📊 _{day_total} kcal total_")
     return "\n".join(lines)

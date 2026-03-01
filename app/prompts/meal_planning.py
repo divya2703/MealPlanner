@@ -21,6 +21,7 @@ WEEKLY_PLAN_SYSTEM_PROMPT = """You are an expert Indian vegetarian meal planner 
 ## Output
 Use the submit_weekly_plan function to return your plan. Each day must have exactly 3 meals: breakfast, lunch, dinner.
 Meal names should be specific (e.g., "Palak Paneer with Roti" not just "Paneer Curry").
+For each meal, estimate calories per person. Be realistic for Indian portion sizes.
 """
 
 SWAP_SUGGESTIONS_SYSTEM_PROMPT = """You are an Indian vegetarian meal planner. The user wants to swap a {meal_type} meal on {day}.

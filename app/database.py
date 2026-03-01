@@ -31,6 +31,7 @@ def _apply_migrations():
         "ALTER TABLE grocery_lists ADD COLUMN group_id INTEGER REFERENCES household_groups(id)",
         "ALTER TABLE pantry_items ADD COLUMN group_id INTEGER REFERENCES household_groups(id)",
         "ALTER TABLE meal_history ADD COLUMN group_id INTEGER REFERENCES household_groups(id)",
+        "ALTER TABLE planned_meals ADD COLUMN estimated_calories INTEGER",
     ]
     with engine.connect() as conn:
         for sql in migrations:

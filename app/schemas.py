@@ -44,8 +44,11 @@ class ClaudeMealPlan(BaseModel):
     class DayPlan(BaseModel):
         day: str
         breakfast: str
+        breakfast_calories: int = 0
         lunch: str
+        lunch_calories: int = 0
         dinner: str
+        dinner_calories: int = 0
 
     days: list[DayPlan]
 

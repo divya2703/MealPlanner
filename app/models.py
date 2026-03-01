@@ -162,6 +162,7 @@ class PlannedMeal(Base):
     meal_type: Mapped[str] = mapped_column(String)  # breakfast/lunch/dinner
     meal_name: Mapped[str] = mapped_column(String)
     meal_id: Mapped[int | None] = mapped_column(ForeignKey("meals.id"), nullable=True)
+    estimated_calories: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String, default="planned")  # planned/confirmed/swapped/cooked/skipped
 
     daily_plan: Mapped["DailyPlan"] = relationship(back_populates="planned_meals")

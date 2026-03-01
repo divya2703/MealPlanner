@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meal Planner Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #333; }
+        .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+        h1 { text-align: center; margin-bottom: 24px; font-size: 1.6em; }
+        .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .card h2 { font-size: 1.1em; margin-bottom: 12px; color: #555; }
+        .meals-grid { display: grid; gap: 8px; }
+        .meal-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #f9f9f9; border-radius: 8px; }
+        .meal-type { font-weight: 600; min-width: 80px; font-size: 0.85em; text-transform: uppercase; color: #888; }
+        .meal-name { flex: 1; }
+        .meal-cal { font-size: 0.85em; color: #e67e22; font-weight: 600; }
+        .total-row { display: flex; justify-content: flex-end; padding: 8px 12px; font-weight: 700; color: #e67e22; }
+        .chart-container { position: relative; height: 250px; }
+        .week-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+        .day-card { text-align: center; padding: 12px; background: #f9f9f9; border-radius: 8px; }
+        .day-card .day-name { font-weight: 700; font-size: 0.85em; color: #888; margin-bottom: 4px; }
+        .day-card .day-cal { font-size: 1.4em; font-weight: 700; color: #e67e22; }
+        .day-card .day-date { font-size: 0.75em; color: #aaa; }
+        .members { display: flex; flex-wrap: wrap; gap: 8px; }
+        .member-chip { padding: 6px 14px; background: #e8f5e9; border-radius: 20px; font-size: 0.85em; }
+        .member-chip .likes { color: #4caf50; }
+        .member-chip .dislikes { color: #e53935; }
+        .empty { text-align: center; color: #aaa; padding: 30px; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 16px; justify-content: center; }
+        .tab { padding: 8px 18px; border-radius: 20px; border: 1px solid #ddd; cursor: pointer; font-size: 0.9em; background: #fff; }
+        .tab.active { background: #333; color: #fff; border-color: #333; }
+        @media (max-width: 600px) { .container { padding: 12px; } .week-grid { grid-template-columns: repeat(3, 1fr); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Meal Planner</h1>
+
+        <div class="card" id="today-card">
+            <h2>Today's Meals</h2>
+            <div id="today-meals" class="meals-grid"><div class="empty">Loading...</div></div>
+        </div>
+
+        <div class="card">
+            <h2>Weekly Calories</h2>
+            <div class="week-grid" id="week-grid"></div>
+        </div>
+
+        <div class="card">
+            <h2>Calorie Trend (14 days)</h2>
+            <div class="chart-container">
+                <canvas id="calorie-chart"></canvas>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Household</h2>
+            <div class="members" id="members"><div class="empty">Loading...</div></div>
+        </div>
+    </div>
+
+    <script>
+        const API = '';
+
+        async function loadToday() {
+            const res = await fetch(`${API}/api/meals/today`);
+            const data = await res.json();
+            const el = document.getElementById('today-meals');
+            if (!data.meals.length) { el.innerHTML = '<div class="empty">No meals planned for today</div>'; return; }
+            el.innerHTML = data.meals.map(m =>
+                `<div class="meal-row">
+                    <span class="meal-type">${m.meal_type}</span>
+                    <span class="meal-name">${m.meal_name}</span>
+                    <span class="meal-cal">${m.calories ? m.calories + ' kcal' : ''}</span>
+                </div>`
+            ).join('') + (data.total_calories ? `<div class="total-row">${data.total_calories} kcal total</div>` : '');
+        }
+
+        async function loadWeek() {
+            const res = await fetch(`${API}/api/meals/week`);
+            const data = await res.json();
+            const el = document.getElementById('week-grid');
+            if (!data.days.length) { el.innerHTML = '<div class="empty">No weekly plan</div>'; return; }
+            el.innerHTML = data.days.map(d =>
+                `<div class="day-card">
+                    <div class="day-name">${d.day_name}</div>
+                    <div class="day-cal">${d.total_calories || '-'}</div>
+                    <div class="day-date">${d.date}</div>
+                </div>`
+            ).join('');
+        }
+
+        async function loadChart() {
+            const res = await fetch(`${API}/api/stats/calories?days=14`);
+            const data = await res.json();
+            if (!data.data.length) return;
+
+            const ctx = document.getElementById('calorie-chart').getContext('2d');
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.data.map(d => d.day_name),
+                    datasets: [
+                        { label: 'Breakfast', data: data.data.map(d => d.meals.breakfast || 0), backgroundColor: '#ffd54f' },
+                        { label: 'Lunch', data: data.data.map(d => d.meals.lunch || 0), backgroundColor: '#ff8a65' },
+                        { label: 'Dinner', data: data.data.map(d => d.meals.dinner || 0), backgroundColor: '#7986cb' },
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, title: { display: true, text: 'kcal' } } },
+                    plugins: { legend: { position: 'bottom' } }
+                }
+            });
+        }
+
+        async function loadMembers() {
+            const res = await fetch(`${API}/api/members`);
+            const data = await res.json();
+            const el = document.getElementById('members');
+            if (!data.members.length) { el.innerHTML = '<div class="empty">No members</div>'; return; }
+            el.innerHTML = data.members.map(m => {
+                let details = [];
+                if (m.favorites.length) details.push(`<span class="likes">${m.favorites.join(', ')}</span>`);
+                if (m.dislikes.length) details.push(`<span class="dislikes">${m.dislikes.join(', ')}</span>`);
+                return `<div class="member-chip">${m.name}${details.length ? ' · ' + details.join(' · ') : ''}</div>`;
+            }).join('');
+        }
+
+        loadToday();
+        loadWeek();
+        loadChart();
+        loadMembers();
+    </script>
+</body>
+</html>

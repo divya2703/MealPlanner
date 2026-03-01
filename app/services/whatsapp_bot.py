@@ -153,6 +153,10 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
         _handle_tomorrow(db, from_number, gid)
         return
 
+    if lower in ("calories", "cals", "kcal", "calories today"):
+        _handle_calories(db, from_number, gid)
+        return
+
     if lower in ("grocery", "list", "grocery list", "shopping list"):
         _handle_grocery_list(db, from_number, gid)
         return
@@ -1076,6 +1080,31 @@ def _handle_set_name(db: Session, number: str, text: str):
     prefs.name = name
     db.commit()
     send_whatsapp(number, f"Name set to *{name}* ✅")
+
+
+def _handle_calories(db: Session, number: str, gid: int | None = None):
+    """Show today's calorie breakdown."""
+    today = date.today()
+    meals = grocery_manager.get_today_meals(db, group_id=gid)
+    if not meals:
+        send_whatsapp(number, "No meals planned for today.")
+        return
+
+    lines = ["*Today's Calories* 📊\n"]
+    total = 0
+    for pm in meals:
+        cals = pm.estimated_calories or 0
+        total += cals
+        emoji = {"breakfast": "🌅", "lunch": "☀️", "dinner": "🌙"}.get(pm.meal_type, "🍽️")
+        cal_str = f"{cals} kcal" if cals else "—"
+        lines.append(f"{emoji} {pm.meal_type.title()}: {pm.meal_name} — *{cal_str}*")
+
+    if total:
+        lines.append(f"\n*Total: {total} kcal*")
+    else:
+        lines.append("\n_Calorie data not available for today's meals. Generate a new plan to get estimates._")
+
+    send_whatsapp(number, "\n".join(lines))
 
 
 def _handle_profile(db: Session, number: str):
