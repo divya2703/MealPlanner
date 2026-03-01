@@ -50,6 +50,11 @@ Commands:
 • *out of [item]* — Mark item as depleted
 • *rate [1-5]* — Rate today's meals
 • *suggest [meal type]* — Get meal suggestions
+• *fav [meal]* — Add a favorite (e.g., fav paneer butter masala)
+• *fav* — View your favorites
+• *fav remove [meal]* — Remove a favorite
+• *dislike [item]* — Exclude from plans (e.g., dislike bitter gourd)
+• *dislikes* — View your dislikes
 • *help* — Show this menu"""
 
 
@@ -129,6 +134,14 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
 
     if lower.startswith("suggest"):
         _handle_suggest(db, from_number, lower)
+        return
+
+    if lower == "fav" or lower.startswith("fav ") or lower == "favorites" or lower == "favourites":
+        _handle_favorites(db, from_number, lower)
+        return
+
+    if lower.startswith("dislike ") or lower == "dislikes":
+        _handle_dislikes(db, from_number, lower)
         return
 
     # Check for active conversation flow
@@ -640,3 +653,94 @@ def _handle_suggest(db: Session, number: str, text: str):
     prompt = f"Suggest 3 Indian vegetarian meals for: {query}. Keep it brief — just dish names with one-line descriptions."
     response = meal_planner.get_freeform_response(prompt)
     send_whatsapp(number, response)
+
+
+def _handle_favorites(db: Session, number: str, text: str):
+    """Handle 'fav [meal]' — add a favorite, or list all favorites."""
+    from app.models import UserPreferences
+
+    prefs = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    if not prefs:
+        send_whatsapp(number, "Send *hi* first to register.")
+        return
+
+    item = text.split(maxsplit=1)[1].strip() if " " in text else ""
+
+    if not item or text.strip().lower() in ("fav", "favorites", "favourites"):
+        # List favorites
+        favs = prefs.favorites
+        if not favs:
+            send_whatsapp(number, "No favorites yet. Add one with *fav paneer butter masala*")
+        else:
+            lines = ["*Your Favorites* ❤️\n"]
+            for f in favs:
+                lines.append(f"• {f}")
+            lines.append("\nThese get prioritized in future meal plans.")
+            send_whatsapp(number, "\n".join(lines))
+    else:
+        # Add favorite
+        favs = prefs.favorites
+        item_lower = item.lower()
+        if item_lower.startswith("remove "):
+            # Remove a favorite
+            to_remove = item_lower.replace("remove ", "").strip()
+            updated = [f for f in favs if f.lower() != to_remove]
+            if len(updated) == len(favs):
+                send_whatsapp(number, f"'{to_remove}' is not in your favorites.")
+            else:
+                prefs.favorites_json = json.dumps(updated)
+                db.commit()
+                send_whatsapp(number, f"Removed *{to_remove}* from favorites ✅")
+        else:
+            if item_lower not in [f.lower() for f in favs]:
+                favs.append(item)
+                prefs.favorites_json = json.dumps(favs)
+                db.commit()
+                send_whatsapp(number, f"Added *{item}* to favorites ❤️")
+            else:
+                send_whatsapp(number, f"*{item}* is already in your favorites.")
+
+
+def _handle_dislikes(db: Session, number: str, text: str):
+    """Handle 'dislike [item]' — add a dislike, or list all dislikes."""
+    from app.models import UserPreferences
+
+    prefs = db.query(UserPreferences).filter_by(whatsapp_number=number).first()
+    if not prefs:
+        send_whatsapp(number, "Send *hi* first to register.")
+        return
+
+    item = text.split(maxsplit=1)[1].strip() if " " in text else ""
+
+    if not item or text.strip().lower() == "dislikes":
+        # List dislikes
+        dislikes = prefs.dislikes
+        if not dislikes:
+            send_whatsapp(number, "No dislikes set. Add one with *dislike bitter gourd*")
+        else:
+            lines = ["*Your Dislikes* 🚫\n"]
+            for d in dislikes:
+                lines.append(f"• {d}")
+            lines.append("\nThese will be excluded from meal plans.")
+            send_whatsapp(number, "\n".join(lines))
+    else:
+        item_lower = item.lower()
+        if item_lower.startswith("remove "):
+            to_remove = item_lower.replace("remove ", "").strip()
+            dislikes = prefs.dislikes
+            updated = [d for d in dislikes if d.lower() != to_remove]
+            if len(updated) == len(dislikes):
+                send_whatsapp(number, f"'{to_remove}' is not in your dislikes.")
+            else:
+                prefs.dislikes_json = json.dumps(updated)
+                db.commit()
+                send_whatsapp(number, f"Removed *{to_remove}* from dislikes ✅")
+        else:
+            dislikes = prefs.dislikes
+            if item_lower not in [d.lower() for d in dislikes]:
+                dislikes.append(item)
+                prefs.dislikes_json = json.dumps(dislikes)
+                db.commit()
+                send_whatsapp(number, f"Added *{item}* to dislikes 🚫\nThis will be excluded from future plans.")
+            else:
+                send_whatsapp(number, f"*{item}* is already in your dislikes.")
