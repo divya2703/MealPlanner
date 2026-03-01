@@ -78,9 +78,9 @@ def test_meal_type_map_completeness():
 
 
 def test_help_text_has_all_commands():
-    commands = ["plan", "today", "tomorrow", "swap", "grocery", "bought", "out of", "rate", "suggest", "help"]
+    commands = ["plan", "today", "tomorrow", "swap", "grocery", "bought", "out of", "rate", "suggest", "fav", "dislike", "name", "away", "back"]
     for cmd in commands:
-        assert cmd in HELP_TEXT.lower()
+        assert cmd in HELP_TEXT.lower(), f"Missing command: {cmd}"
 
 
 # --- Command Routing Tests (with mocked external calls) ---
@@ -90,14 +90,14 @@ def test_help_text_has_all_commands():
 def test_help_command(mock_send, db):
     handle_message(db, NUMBER, "help")
     mock_send.assert_called_once()
-    assert "Commands" in mock_send.call_args[0][1]
+    assert "Meal Planning Bot" in mock_send.call_args[0][1]
 
 
 @patch("app.services.whatsapp_bot.send_whatsapp")
 def test_hello_shows_help(mock_send, db):
     handle_message(db, NUMBER, "hi")
     mock_send.assert_called_once()
-    assert "Commands" in mock_send.call_args[0][1]
+    assert "Meal Planning Bot" in mock_send.call_args[0][1]
 
 
 @patch("app.services.whatsapp_bot.send_whatsapp")

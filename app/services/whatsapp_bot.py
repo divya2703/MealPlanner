@@ -37,28 +37,34 @@ MEAL_TYPE_MAP = {
 
 HELP_TEXT = """*Meal Planning Bot* 🍽️
 
-Commands:
-• *plan* — Generate a new weekly meal plan
-• *today* — See today's meals
-• *tomorrow* — See tomorrow's meals
-• *swap [day] [meal]* — Swap a meal (e.g., swap monday dinner)
-• *grocery* — View full week's grocery list
-• *grocery today* / *grocery tomorrow* — Grocery for a specific day
-• *swiggy* — Swiggy Instamart links (full week)
-• *swiggy today* / *swiggy tomorrow* — Swiggy links for a specific day
-• *bought [items]* — Mark items as purchased (e.g., bought tomatoes, onions)
-• *out of [item]* — Mark item as depleted
-• *rate [1-5]* — Rate today's meals
-• *suggest [meal type]* — Get meal suggestions
-• *fav [meal]* — Add a favorite (e.g., fav paneer butter masala)
-• *fav* — View your favorites
-• *fav remove [meal]* — Remove a favorite
-• *dislike [item]* — Exclude from plans (e.g., dislike bitter gourd)
-• *dislikes* — View your dislikes
-• *name [your name]* — Set your display name
-• *away [period]* — Mark yourself away (e.g., away march, away 2 weeks)
-• *back* — Mark yourself as returned
-• *help* — Show this menu"""
+*Meals*
+• *plan* — Generate weekly plan
+• *today* / *tomorrow* — View meals
+• *swap mon dinner* — Change a meal
+• *suggest lunch* — Get ideas
+
+*Grocery*
+• *grocery* — Full week list
+• *grocery today* — Today only
+• *swiggy* / *swiggy today* — Instamart links
+• *bought tomatoes, paneer* — Mark purchased
+• *out of rice* — Mark depleted
+
+*Preferences*
+• *fav paneer tikka* — Add favorite
+• *dislike paratha* — Exclude from plans
+• *fav* / *dislikes* — View lists
+• *rate 4* — Rate today's meals
+
+*Profile*
+• *name Priya* — Set your name
+• *away april* — Away for a month
+• *away 2 weeks* — Away for 2 weeks
+• *back* — Mark yourself returned
+
+_New here? Set up with:_
+*name [you]* → *dislike [foods]* → *fav [foods]*
+_Your dislikes auto-adjust the plan when you're home._"""
 
 
 def _ensure_user_registered(db: Session, number: str):
