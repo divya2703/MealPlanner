@@ -1,11 +1,8 @@
-"""Tests for app.prompts.meal_planning — prompt templates and tool definitions."""
+"""Tests for app.prompts.meal_planning — prompt templates and helpers."""
 
 from app.prompts.meal_planning import (
     FREEFORM_SYSTEM_PROMPT,
     INGREDIENT_EXTRACTION_SYSTEM_PROMPT,
-    SUBMIT_GROCERY_LIST_TOOL,
-    SUBMIT_SWAP_SUGGESTIONS_TOOL,
-    SUBMIT_WEEKLY_PLAN_TOOL,
     SWAP_SUGGESTIONS_SYSTEM_PROMPT,
     WEEKLY_PLAN_SYSTEM_PROMPT,
     get_month_name,
@@ -66,34 +63,6 @@ def test_get_month_name():
     assert get_month_name(1) == "January"
     assert get_month_name(3) == "March"
     assert get_month_name(12) == "December"
-
-
-def test_submit_weekly_plan_tool_schema():
-    assert SUBMIT_WEEKLY_PLAN_TOOL["name"] == "submit_weekly_plan"
-    schema = SUBMIT_WEEKLY_PLAN_TOOL["input_schema"]
-    assert "days" in schema["properties"]
-    items = schema["properties"]["days"]["items"]
-    assert "day" in items["properties"]
-    assert "breakfast" in items["properties"]
-    assert "lunch" in items["properties"]
-    assert "dinner" in items["properties"]
-
-
-def test_submit_swap_tool_schema():
-    assert SUBMIT_SWAP_SUGGESTIONS_TOOL["name"] == "submit_swap_suggestions"
-    schema = SUBMIT_SWAP_SUGGESTIONS_TOOL["input_schema"]
-    assert "suggestions" in schema["properties"]
-
-
-def test_submit_grocery_tool_schema():
-    assert SUBMIT_GROCERY_LIST_TOOL["name"] == "submit_grocery_list"
-    schema = SUBMIT_GROCERY_LIST_TOOL["input_schema"]
-    assert "items" in schema["properties"]
-    item_props = schema["properties"]["items"]["items"]["properties"]
-    assert "name" in item_props
-    assert "quantity" in item_props
-    assert "unit" in item_props
-    assert "category" in item_props
 
 
 def test_freeform_prompt_not_empty():

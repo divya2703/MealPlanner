@@ -1,10 +1,11 @@
-"""Claude API integration for meal planning intelligence."""
+"""Gemini API integration for meal planning intelligence."""
 
 import json
 import logging
 from datetime import date, timedelta
 
-import anthropic
+from google import genai
+from google.genai import types
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -12,9 +13,6 @@ from app.models import DailyPlan, MealHistory, PlannedMeal, UserPreferences, Wee
 from app.prompts.meal_planning import (
     FREEFORM_SYSTEM_PROMPT,
     INGREDIENT_EXTRACTION_SYSTEM_PROMPT,
-    SUBMIT_GROCERY_LIST_TOOL,
-    SUBMIT_SWAP_SUGGESTIONS_TOOL,
-    SUBMIT_WEEKLY_PLAN_TOOL,
     SWAP_SUGGESTIONS_SYSTEM_PROMPT,
     WEEKLY_PLAN_SYSTEM_PROMPT,
     get_month_name,
@@ -24,9 +22,97 @@ from app.schemas import ClaudeGroceryExtract, ClaudeMealPlan, ClaudeSwapSuggesti
 
 logger = logging.getLogger(__name__)
 
-client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+_client: genai.Client | None = None
+
+
+def _get_client() -> genai.Client:
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=settings.gemini_api_key)
+    return _client
 
 DAY_ORDER = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+# --- Gemini function declarations ---
+
+WEEKLY_PLAN_FUNC = types.FunctionDeclaration(
+    name="submit_weekly_plan",
+    description="Submit a 7-day meal plan with breakfast, lunch, and dinner for each day.",
+    parameters=types.Schema(
+        type="OBJECT",
+        properties={
+            "days": types.Schema(
+                type="ARRAY",
+                items=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "day": types.Schema(type="STRING", description="Day of week: monday/tuesday/.../sunday"),
+                        "breakfast": types.Schema(type="STRING", description="Breakfast dish name"),
+                        "lunch": types.Schema(type="STRING", description="Lunch dish name"),
+                        "dinner": types.Schema(type="STRING", description="Dinner dish name"),
+                    },
+                    required=["day", "breakfast", "lunch", "dinner"],
+                ),
+            ),
+        },
+        required=["days"],
+    ),
+)
+
+SWAP_SUGGESTIONS_FUNC = types.FunctionDeclaration(
+    name="submit_swap_suggestions",
+    description="Submit 3 alternative meal suggestions for swapping.",
+    parameters=types.Schema(
+        type="OBJECT",
+        properties={
+            "suggestions": types.Schema(
+                type="ARRAY",
+                items=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "meal_name": types.Schema(type="STRING"),
+                        "reason": types.Schema(type="STRING", description="Brief reason why this is a good swap"),
+                    },
+                    required=["meal_name", "reason"],
+                ),
+            ),
+        },
+        required=["suggestions"],
+    ),
+)
+
+GROCERY_LIST_FUNC = types.FunctionDeclaration(
+    name="submit_grocery_list",
+    description="Submit the aggregated grocery/ingredient list for the week's meals.",
+    parameters=types.Schema(
+        type="OBJECT",
+        properties={
+            "items": types.Schema(
+                type="ARRAY",
+                items=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "name": types.Schema(type="STRING"),
+                        "quantity": types.Schema(type="NUMBER"),
+                        "unit": types.Schema(type="STRING", description="One of: g, kg, ml, l, pieces, bunch"),
+                        "category": types.Schema(type="STRING", description="One of: vegetable, grain, pulse, spice, dairy, oil, other"),
+                    },
+                    required=["name", "quantity", "unit", "category"],
+                ),
+            ),
+        },
+        required=["items"],
+    ),
+)
+
+
+def _extract_function_args(response, function_name: str) -> dict | None:
+    """Extract function call arguments from Gemini response."""
+    for candidate in response.candidates:
+        for part in candidate.content.parts:
+            if part.function_call and part.function_call.name == function_name:
+                return dict(part.function_call.args)
+    return None
 
 
 def _get_recent_meals(db: Session, days: int = 14) -> list[str]:
@@ -50,16 +136,8 @@ def _get_user_prefs(db: Session) -> UserPreferences:
     return prefs
 
 
-def _extract_tool_input(response: anthropic.types.Message, tool_name: str) -> dict | None:
-    """Extract tool input from Claude's response."""
-    for block in response.content:
-        if block.type == "tool_use" and block.name == tool_name:
-            return block.input
-    return None
-
-
 def generate_weekly_plan(db: Session) -> WeeklyPlan | None:
-    """Generate a 7-day meal plan using Claude."""
+    """Generate a 7-day meal plan using Gemini."""
     prefs = _get_user_prefs(db)
     recent_meals = _get_recent_meals(db)
 
@@ -74,21 +152,37 @@ def generate_weekly_plan(db: Session) -> WeeklyPlan | None:
         recent_meals=", ".join(recent_meals) or "none",
     )
 
-    response = client.messages.create(
-        model=settings.claude_model,
-        max_tokens=4096,
-        system=system_prompt,
-        tools=[SUBMIT_WEEKLY_PLAN_TOOL],
-        tool_choice={"type": "tool", "name": "submit_weekly_plan"},
-        messages=[{"role": "user", "content": "Generate a meal plan for this week starting Monday."}],
+    tool = types.Tool(function_declarations=[WEEKLY_PLAN_FUNC])
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        tools=[tool],
+        tool_config=types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(mode="ANY", allowed_function_names=["submit_weekly_plan"]),
+        ),
     )
 
-    plan_data = _extract_tool_input(response, "submit_weekly_plan")
+    response = _get_client().models.generate_content(
+        model=settings.gemini_model,
+        contents="Generate a meal plan for this week starting Monday.",
+        config=config,
+    )
+
+    plan_data = _extract_function_args(response, "submit_weekly_plan")
     if not plan_data:
-        logger.error("Claude did not return a weekly plan via tool use")
+        logger.error("Gemini did not return a weekly plan via function call")
         return None
 
-    parsed = ClaudeMealPlan(**plan_data)
+    # Convert proto MapComposite objects to plain dicts
+    days_list = []
+    for day in plan_data["days"]:
+        days_list.append({
+            "day": str(day["day"]),
+            "breakfast": str(day["breakfast"]),
+            "lunch": str(day["lunch"]),
+            "dinner": str(day["dinner"]),
+        })
+
+    parsed = ClaudeMealPlan(days=days_list)
 
     # Calculate week start (next Monday)
     today = date.today()
@@ -143,28 +237,37 @@ def get_swap_suggestions(
         recent_meals=", ".join(recent_meals) or "none",
     )
 
-    response = client.messages.create(
-        model=settings.claude_model,
-        max_tokens=1024,
-        system=system_prompt,
-        tools=[SUBMIT_SWAP_SUGGESTIONS_TOOL],
-        tool_choice={"type": "tool", "name": "submit_swap_suggestions"},
-        messages=[{"role": "user", "content": f"Suggest 3 alternatives to replace {current_meal}."}],
+    tool = types.Tool(function_declarations=[SWAP_SUGGESTIONS_FUNC])
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        tools=[tool],
+        tool_config=types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(mode="ANY", allowed_function_names=["submit_swap_suggestions"]),
+        ),
     )
 
-    data = _extract_tool_input(response, "submit_swap_suggestions")
+    response = _get_client().models.generate_content(
+        model=settings.gemini_model,
+        contents=f"Suggest 3 alternatives to replace {current_meal}.",
+        config=config,
+    )
+
+    data = _extract_function_args(response, "submit_swap_suggestions")
     if not data:
-        logger.error("Claude did not return swap suggestions")
+        logger.error("Gemini did not return swap suggestions")
         return None
 
-    parsed = ClaudeSwapSuggestions(**data)
-    return [{"meal_name": s.meal_name, "reason": s.reason} for s in parsed.suggestions]
+    suggestions = []
+    for s in data["suggestions"]:
+        suggestions.append({"meal_name": str(s["meal_name"]), "reason": str(s["reason"])})
+
+    return suggestions
 
 
 def extract_grocery_list(
     db: Session, meals: list[str], pantry_items: list[str] | None = None
 ) -> list[dict] | None:
-    """Extract aggregated ingredient list for given meals using Claude."""
+    """Extract aggregated ingredient list for given meals using Gemini."""
     prefs = _get_user_prefs(db)
 
     system_prompt = INGREDIENT_EXTRACTION_SYSTEM_PROMPT.format(
@@ -173,33 +276,119 @@ def extract_grocery_list(
         meals_list="\n".join(f"- {m}" for m in meals),
     )
 
-    response = client.messages.create(
-        model=settings.claude_model,
-        max_tokens=4096,
-        system=system_prompt,
-        tools=[SUBMIT_GROCERY_LIST_TOOL],
-        tool_choice={"type": "tool", "name": "submit_grocery_list"},
-        messages=[{"role": "user", "content": "Extract the ingredient list for these meals."}],
+    tool = types.Tool(function_declarations=[GROCERY_LIST_FUNC])
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        tools=[tool],
+        tool_config=types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(mode="ANY", allowed_function_names=["submit_grocery_list"]),
+        ),
     )
 
-    data = _extract_tool_input(response, "submit_grocery_list")
+    response = _get_client().models.generate_content(
+        model=settings.gemini_model,
+        contents="Extract the ingredient list for these meals.",
+        config=config,
+    )
+
+    data = _extract_function_args(response, "submit_grocery_list")
     if not data:
-        logger.error("Claude did not return grocery list")
+        logger.error("Gemini did not return grocery list")
         return None
 
-    parsed = ClaudeGroceryExtract(**data)
-    return [item.model_dump() for item in parsed.items]
+    items = []
+    for item in data["items"]:
+        items.append({
+            "name": str(item["name"]),
+            "quantity": float(item["quantity"]),
+            "unit": str(item["unit"]),
+            "category": str(item.get("category", "other")),
+        })
+
+    return items
+
+
+INTENT_DETECTION_FUNC = types.FunctionDeclaration(
+    name="detect_intent",
+    description="Detect the user's intent from a natural language message about meal planning.",
+    parameters=types.Schema(
+        type="OBJECT",
+        properties={
+            "intent": types.Schema(
+                type="STRING",
+                description="One of: approve, regenerate, swap, today, tomorrow, grocery, suggest, help, other",
+            ),
+            "day": types.Schema(
+                type="STRING",
+                description="Day of week if mentioned (monday/tuesday/.../sunday), or empty",
+            ),
+            "meal_type": types.Schema(
+                type="STRING",
+                description="Meal type if mentioned (breakfast/lunch/dinner), or empty",
+            ),
+        },
+        required=["intent"],
+    ),
+)
+
+INTENT_SYSTEM_PROMPT = """You are an intent classifier for a meal planning WhatsApp bot.
+Classify the user's message into one of these intents:
+- approve: user is happy with the plan (e.g., "looks great", "perfect", "go ahead")
+- regenerate: user wants a completely new plan (e.g., "redo it", "start over", "new plan")
+- swap: user wants to change a specific meal (e.g., "something else for friday dinner", "change monday breakfast")
+- today: user asks about today's meals
+- tomorrow: user asks about tomorrow's meals
+- grocery: user asks about grocery/shopping list
+- suggest: user wants meal suggestions
+- help: user needs help or instructions
+- other: anything else
+
+If the intent is swap, also extract the day and meal_type if mentioned.
+If no meal_type is mentioned for a swap, default to "dinner".
+"""
+
+
+def detect_intent(message: str) -> dict:
+    """Use Gemini to detect intent from natural language."""
+    tool = types.Tool(function_declarations=[INTENT_DETECTION_FUNC])
+    config = types.GenerateContentConfig(
+        system_instruction=INTENT_SYSTEM_PROMPT,
+        tools=[tool],
+        tool_config=types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(mode="ANY", allowed_function_names=["detect_intent"]),
+        ),
+    )
+
+    response = _get_client().models.generate_content(
+        model=settings.gemini_model,
+        contents=message,
+        config=config,
+    )
+
+    data = _extract_function_args(response, "detect_intent")
+    if not data:
+        return {"intent": "other"}
+
+    return {
+        "intent": str(data.get("intent", "other")),
+        "day": str(data.get("day", "")),
+        "meal_type": str(data.get("meal_type", "")),
+    }
 
 
 def get_freeform_response(message: str) -> str:
-    """Get a freeform response from Claude for general queries."""
-    response = client.messages.create(
-        model=settings.claude_model,
-        max_tokens=500,
-        system=FREEFORM_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": message}],
+    """Get a freeform response from Gemini for general queries."""
+    config = types.GenerateContentConfig(
+        system_instruction=FREEFORM_SYSTEM_PROMPT,
+        max_output_tokens=500,
     )
-    return response.content[0].text
+
+    response = _get_client().models.generate_content(
+        model=settings.gemini_model,
+        contents=message,
+        config=config,
+    )
+    return response.text
 
 
 def format_weekly_plan(weekly_plan: WeeklyPlan) -> str:
