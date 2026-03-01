@@ -251,6 +251,20 @@ class GroceryListItem(Base):
     grocery_list: Mapped["GroceryList"] = relationship(back_populates="items")
 
 
+# --- Bot Log ---
+
+
+class BotLog(Base):
+    __tablename__ = "bot_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    direction: Mapped[str] = mapped_column(String)  # inbound/outbound/error
+    user_id: Mapped[str] = mapped_column(String, default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 # --- Conversation State ---
 
 

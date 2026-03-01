@@ -56,11 +56,28 @@ def split_message(text: str, max_length: int = MAX_WHATSAPP_LENGTH) -> list[str]
 
 def send_message(user_id: str, body: str) -> bool:
     """Unified send — dispatches to WhatsApp or Telegram based on user_id prefix."""
+    _log_outbound(user_id, body)
     if user_id.startswith("tg:"):
         chat_id = user_id.removeprefix("tg:")
         return _send_telegram(chat_id, body)
     else:
         return _send_whatsapp(user_id, body)
+
+
+def _log_outbound(user_id: str, body: str):
+    """Log outbound message to DB (best-effort, never fails the send)."""
+    try:
+        from app.database import SessionLocal
+        from app.models import BotLog
+        db = SessionLocal()
+        try:
+            preview = body[:200] + "..." if len(body) > 200 else body
+            db.add(BotLog(direction="outbound", user_id=user_id, message=preview))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass  # Never let logging break message sending
 
 
 def _send_whatsapp(to: str, body: str) -> bool:

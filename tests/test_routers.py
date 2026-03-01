@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+import app.models  # ensure all models are registered with Base
 from app.database import Base, get_db
 from app.main import app
 

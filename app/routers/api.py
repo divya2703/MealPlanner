@@ -7,9 +7,36 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import DailyPlan, MealHistory, PlannedMeal, UserPreferences, WeeklyPlan
+from app.models import BotLog, DailyPlan, MealHistory, PlannedMeal, UserPreferences, WeeklyPlan
 
 router = APIRouter(prefix="/api", tags=["api"])
+
+
+@router.get("/debug/logs")
+def get_debug_logs(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """Recent bot activity log — inbound messages, outbound replies, errors."""
+    logs = (
+        db.query(BotLog)
+        .order_by(BotLog.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "logs": [
+            {
+                "id": log.id,
+                "time": str(log.timestamp),
+                "dir": log.direction,
+                "user": log.user_id,
+                "message": log.message[:300],
+                "error": log.error[:500] if log.error else None,
+            }
+            for log in logs
+        ]
+    }
 
 
 @router.get("/meals/today")
