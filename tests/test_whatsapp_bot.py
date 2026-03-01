@@ -6,11 +6,16 @@ Tests that require Claude API or Twilio are mocked.
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.models import (
     ConversationState,
     DailyPlan,
+    HouseholdGroup,
     MealHistory,
+    MealSkip,
     PlannedMeal,
+    UserPreferences,
     WeeklyPlan,
 )
 from app.services.whatsapp_bot import (
@@ -24,6 +29,14 @@ from app.services.whatsapp_bot import (
 )
 
 NUMBER = "whatsapp:+911234567890"
+
+
+@pytest.fixture(autouse=True)
+def _register_test_user(db):
+    """Pre-register the test user so welcome flow doesn't trigger."""
+    prefs = UserPreferences(user_id=NUMBER)
+    db.add(prefs)
+    db.commit()
 
 
 # --- State Management Tests ---
@@ -253,3 +266,96 @@ def test_suggest_command(mock_claude, mock_send, db):
     handle_message(db, NUMBER, "suggest breakfast")
     mock_claude.assert_called_once()
     assert "breakfast" in mock_claude.call_args[0][0]
+
+
+# --- New Feature Tests ---
+
+
+@patch("app.services.whatsapp_bot.send_whatsapp")
+def test_welcome_new_user(mock_send, db):
+    """A completely new number should receive the welcome message."""
+    new_number = "whatsapp:+919999999999"
+    handle_message(db, new_number, "hi")
+    mock_send.assert_called_once()
+    assert "Welcome" in mock_send.call_args[0][1]
+
+
+@patch("app.services.whatsapp_bot.send_whatsapp")
+def test_group_create(mock_send, db):
+    """'group create testgroup' should create the group and confirm."""
+    handle_message(db, NUMBER, "group create testgroup")
+    mock_send.assert_called_once()
+    assert "created" in mock_send.call_args[0][1].lower()
+
+
+@patch("app.services.whatsapp_bot.send_whatsapp")
+def test_group_join(mock_send, db):
+    """'group join [name]' should add the user to an existing group."""
+    group = HouseholdGroup(name="myflatmates")
+    db.add(group)
+    db.commit()
+
+    handle_message(db, NUMBER, "group join myflatmates")
+    mock_send.assert_called_once()
+    assert "Joined" in mock_send.call_args[0][1]
+
+
+@patch("app.services.whatsapp_bot.send_whatsapp")
+def test_group_info(mock_send, db):
+    """'group info' should display the group name when the user is in one."""
+    group = HouseholdGroup(name="myapartment")
+    db.add(group)
+    db.flush()
+
+    prefs = db.query(UserPreferences).filter_by(user_id=NUMBER).first()
+    prefs.group_id = group.id
+    db.commit()
+
+    handle_message(db, NUMBER, "group info")
+    mock_send.assert_called_once()
+    assert "myapartment" in mock_send.call_args[0][1]
+
+
+@patch("app.services.whatsapp_bot.send_whatsapp")
+def test_profile_command(mock_send, db):
+    """'me' should display the user's profile."""
+    handle_message(db, NUMBER, "me")
+    mock_send.assert_called_once()
+    assert "Your Profile" in mock_send.call_args[0][1]
+
+
+@patch("app.services.whatsapp_bot.send_whatsapp")
+def test_fav_add(mock_send, db):
+    """'fav paneer tikka' should add the item and confirm."""
+    handle_message(db, NUMBER, "fav paneer tikka")
+    mock_send.assert_called_once()
+    assert "Added" in mock_send.call_args[0][1]
+
+
+@patch("app.services.whatsapp_bot.send_whatsapp")
+def test_fav_list(mock_send, db):
+    """'fav' with no argument should list existing favorites."""
+    import json
+    prefs = db.query(UserPreferences).filter_by(user_id=NUMBER).first()
+    prefs.favorites_json = json.dumps(["Palak Paneer"])
+    db.commit()
+
+    handle_message(db, NUMBER, "fav")
+    mock_send.assert_called_once()
+    assert "Palak Paneer" in mock_send.call_args[0][1]
+
+
+@patch("app.services.whatsapp_bot.send_whatsapp")
+def test_dislike_add(mock_send, db):
+    """'dislike bitter gourd' should add the item and confirm."""
+    handle_message(db, NUMBER, "dislike bitter gourd")
+    mock_send.assert_called_once()
+    assert "Added" in mock_send.call_args[0][1]
+
+
+@patch("app.services.whatsapp_bot.send_whatsapp")
+def test_skip_command(mock_send, db):
+    """'skip tomorrow breakfast lunch' should record the skip and confirm."""
+    handle_message(db, NUMBER, "skip tomorrow breakfast lunch")
+    mock_send.assert_called_once()
+    assert "Skipping" in mock_send.call_args[0][1]

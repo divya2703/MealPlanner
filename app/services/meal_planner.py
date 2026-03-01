@@ -2,10 +2,12 @@
 
 import json
 import logging
+import time
 from datetime import date, timedelta
 
 from google import genai
 from google.genai import types
+from google.genai.errors import ClientError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -32,6 +34,25 @@ def _get_client() -> genai.Client:
     return _client
 
 DAY_ORDER = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+MAX_RETRIES = 3
+RETRY_DELAY = 10  # seconds
+
+
+def _call_gemini(model: str, contents: str, config: types.GenerateContentConfig):
+    """Call Gemini with automatic retry on rate limits."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            return _get_client().models.generate_content(
+                model=model, contents=contents, config=config,
+            )
+        except ClientError as e:
+            if e.status_code == 429 and attempt < MAX_RETRIES - 1:
+                wait = RETRY_DELAY * (attempt + 1)
+                logger.warning(f"Gemini rate limited, retrying in {wait}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                time.sleep(wait)
+            else:
+                raise
 
 # --- Gemini function declarations ---
 
@@ -260,7 +281,7 @@ def generate_weekly_plan(db: Session, group_id: int | None = None) -> WeeklyPlan
         ),
     )
 
-    response = _get_client().models.generate_content(
+    response = _call_gemini(
         model=settings.gemini_model,
         contents="Generate a meal plan for this week starting Monday.",
         config=config,
@@ -337,7 +358,7 @@ def get_swap_suggestions(
         ),
     )
 
-    response = _get_client().models.generate_content(
+    response = _call_gemini(
         model=settings.gemini_model,
         contents=f"Suggest 3 alternatives to replace {current_meal}.",
         config=config,
@@ -376,7 +397,7 @@ def extract_grocery_list(
         ),
     )
 
-    response = _get_client().models.generate_content(
+    response = _call_gemini(
         model=settings.gemini_model,
         contents="Extract the ingredient list for these meals.",
         config=config,
@@ -452,7 +473,7 @@ def detect_intent(message: str) -> dict:
         ),
     )
 
-    response = _get_client().models.generate_content(
+    response = _call_gemini(
         model=settings.gemini_model,
         contents=message,
         config=config,
@@ -476,7 +497,7 @@ def get_freeform_response(message: str) -> str:
         max_output_tokens=500,
     )
 
-    response = _get_client().models.generate_content(
+    response = _call_gemini(
         model=settings.gemini_model,
         contents=message,
         config=config,

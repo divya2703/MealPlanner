@@ -71,3 +71,22 @@ def test_whatsapp_webhook_handles_errors(mock_handle, client):
     )
     # Should still return 200 (Twilio expects it)
     assert response.status_code == 200
+
+
+@patch("app.routers.telegram.handle_message")
+def test_telegram_webhook(mock_handle, client):
+    update = {
+        "update_id": 1,
+        "message": {
+            "message_id": 1,
+            "chat": {"id": 12345, "type": "private"},
+            "from": {"id": 12345},
+            "text": "help",
+        },
+    }
+    response = client.post("/webhook/telegram", json=update)
+    assert response.status_code == 200
+    mock_handle.assert_called_once()
+    args = mock_handle.call_args[0]
+    assert args[1] == "tg:12345"
+    assert args[2] == "help"

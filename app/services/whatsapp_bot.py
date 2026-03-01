@@ -73,23 +73,46 @@ _New here? Set up with:_
 _Your dislikes auto-adjust the plan when you're home._"""
 
 
-def _ensure_user_registered(db: Session, number: str):
-    """Auto-register a user if they message the bot for the first time."""
-    from app.models import HouseholdGroup, UserPreferences
-    from app.config import settings
+WELCOME_TEXT = """Welcome to *Meal Planning Bot*! 🍽️
+
+Let's get you set up in 3 quick steps:
+
+*1.* Set your name:
+   *name Divya*
+
+*2.* Join or create a group (household):
+   *group join myflat* or *group create myflat*
+
+*3.* Add your food preferences:
+   *fav paneer butter masala*
+   *dislike bitter gourd*
+
+That's it! Send *plan* to generate your first weekly meal plan.
+Send *help* anytime for all commands."""
+
+
+def _ensure_user_registered(db: Session, number: str) -> bool:
+    """Auto-register a user if they message the bot for the first time.
+
+    Returns True if this is a brand new user (triggers welcome).
+    """
+    from app.models import HouseholdGroup
 
     existing = db.query(UserPreferences).filter_by(user_id=number).first()
-    if not existing:
-        # Assign to default group
-        default_group = db.query(HouseholdGroup).filter_by(name="default").first()
-        prefs = UserPreferences(
-            user_id=number,
-            family_size=settings.family_size,
-            group_id=default_group.id if default_group else None,
-        )
-        db.add(prefs)
-        db.commit()
-        logger.info(f"Auto-registered new user: {number}")
+    if existing:
+        return False
+
+    from app.config import settings
+    default_group = db.query(HouseholdGroup).filter_by(name="default").first()
+    prefs = UserPreferences(
+        user_id=number,
+        family_size=settings.family_size,
+        group_id=default_group.id if default_group else None,
+    )
+    db.add(prefs)
+    db.commit()
+    logger.info(f"Auto-registered new user: {number}")
+    return True
 
 
 def _get_user_group_id(db: Session, user_id: str) -> int | None:
@@ -103,7 +126,10 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
     text = body.strip()
 
     # Auto-register user on first message
-    _ensure_user_registered(db, from_number)
+    is_new = _ensure_user_registered(db, from_number)
+    if is_new:
+        send_whatsapp(from_number, WELCOME_TEXT)
+        return
 
     # Resolve group context once
     gid = _get_user_group_id(db, from_number)
@@ -179,6 +205,10 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
         _handle_skip(db, from_number, lower)
         return
 
+    if lower in ("me", "profile", "status"):
+        _handle_profile(db, from_number)
+        return
+
     if lower.startswith("away ") or lower == "away":
         _handle_away(db, from_number, lower)
         return
@@ -248,6 +278,13 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
 
 
 def _get_active_state(db: Session, number: str) -> ConversationState | None:
+    from datetime import datetime, timedelta as td
+
+    # Clean up stale states older than 24 hours
+    cutoff = datetime.now() - td(hours=24)
+    db.query(ConversationState).filter(ConversationState.updated_at < cutoff).delete()
+    db.commit()
+
     return (
         db.query(ConversationState)
         .filter(ConversationState.user_id == number)
@@ -303,11 +340,16 @@ def _handle_flow(db: Session, number: str, text: str, state: ConversationState, 
 
 def _start_weekly_plan_flow(db: Session, number: str, gid: int | None = None):
     """Generate and send a weekly plan, then wait for approval."""
-    send_whatsapp(number, "Generating your weekly meal plan... This may take a moment.")
+    send_whatsapp(number, "Generating your weekly meal plan... This may take a moment. ⏳")
 
-    weekly_plan = meal_planner.generate_weekly_plan(db, group_id=gid)
+    try:
+        weekly_plan = meal_planner.generate_weekly_plan(db, group_id=gid)
+    except Exception:
+        logger.exception("Failed to generate weekly plan")
+        weekly_plan = None
+
     if not weekly_plan:
-        send_whatsapp(number, "Sorry, I couldn't generate a plan right now. Please try again.")
+        send_whatsapp(number, "Sorry, I couldn't generate a plan right now. Please try again in a minute.")
         return
 
     formatted = meal_planner.format_weekly_plan(weekly_plan)
@@ -325,7 +367,7 @@ def _weekly_plan_flow(db: Session, number: str, text: str, state: ConversationSt
         lower = text.strip().lower()
 
         if lower in ("1", "ok", "yes", "approve", "looks good", "perfect"):
-            plan = db.query(WeeklyPlan).get(ctx["plan_id"])
+            plan = db.get(WeeklyPlan, ctx["plan_id"])
             if plan:
                 plan.status = "approved"
                 db.commit()
@@ -343,7 +385,7 @@ def _weekly_plan_flow(db: Session, number: str, text: str, state: ConversationSt
 
         elif lower in ("2", "regenerate", "redo", "new"):
             # Delete old plan
-            old = db.query(WeeklyPlan).get(ctx["plan_id"])
+            old = db.get(WeeklyPlan, ctx["plan_id"])
             if old:
                 db.delete(old)
                 db.commit()
@@ -459,7 +501,7 @@ def _swap_flow(db: Session, number: str, text: str, state: ConversationState):
         suggestions = ctx["suggestions"]
         if idx < len(suggestions):
             new_meal = suggestions[idx]["meal_name"]
-            pm = db.query(PlannedMeal).get(ctx["planned_meal_id"])
+            pm = db.get(PlannedMeal, ctx["planned_meal_id"])
             if pm:
                 old_name = pm.meal_name
                 pm.meal_name = new_meal
@@ -508,7 +550,7 @@ def _daily_confirm_flow(db: Session, number: str, text: str, state: Conversation
     ctx = state.context
 
     if lower in ("ok", "yes", "confirm", "1", "looks good"):
-        daily = db.query(DailyPlan).get(ctx["daily_plan_id"])
+        daily = db.get(DailyPlan, ctx["daily_plan_id"])
         if daily:
             daily.status = "confirmed"
             db.commit()
@@ -734,7 +776,7 @@ def _handle_group_command(db: Session, number: str, text: str):
         if not prefs or not prefs.group_id:
             send_whatsapp(number, "You're not in a group. Use *group create [name]* or *group join [name]*")
             return
-        group = db.query(HouseholdGroup).get(prefs.group_id)
+        group = db.get(HouseholdGroup, prefs.group_id)
         members = db.query(UserPreferences).filter_by(group_id=prefs.group_id).all()
         names = [m.display_name for m in members]
         send_whatsapp(number, f"*Group:* {group.name}\n*Members:* {', '.join(names)}")
@@ -1034,3 +1076,40 @@ def _handle_set_name(db: Session, number: str, text: str):
     prefs.name = name
     db.commit()
     send_whatsapp(number, f"Name set to *{name}* ✅")
+
+
+def _handle_profile(db: Session, number: str):
+    """Show user's profile summary."""
+    from app.models import HouseholdGroup
+
+    prefs = db.query(UserPreferences).filter_by(user_id=number).first()
+    if not prefs:
+        send_whatsapp(number, "Send *hi* first to register.")
+        return
+
+    lines = [f"*Your Profile* 👤\n"]
+    lines.append(f"*Name:* {prefs.display_name}")
+
+    if prefs.group_id:
+        group = db.get(HouseholdGroup, prefs.group_id)
+        members = db.query(UserPreferences).filter_by(group_id=prefs.group_id).all()
+        names = [m.display_name for m in members if m.user_id != number]
+        lines.append(f"*Group:* {group.name}")
+        if names:
+            lines.append(f"*Flatmates:* {', '.join(names)}")
+    else:
+        lines.append("*Group:* none (use *group join [name]*)")
+
+    favs = prefs.favorites
+    if favs:
+        lines.append(f"*Favorites:* {', '.join(favs)}")
+
+    dislikes = prefs.dislikes
+    if dislikes:
+        lines.append(f"*Dislikes:* {', '.join(dislikes)}")
+
+    if prefs.away_from and prefs.away_until:
+        lines.append(f"*Away:* {prefs.away_from.strftime('%d %b')} to {prefs.away_until.strftime('%d %b')}")
+
+    lines.append(f"\n_Send *help* for all commands._")
+    send_whatsapp(number, "\n".join(lines))
