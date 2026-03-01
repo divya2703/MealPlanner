@@ -462,17 +462,21 @@ Classify the user's message into one of these intents:
 - approve: user is happy with the plan (e.g., "looks great", "perfect", "go ahead")
 - regenerate: user wants a completely new plan (e.g., "redo it", "start over", "new plan")
 - swap: user wants to change a specific meal (e.g., "something else for friday dinner", "change monday breakfast")
+- add_favorite: user wants to add a dish to their favorites/rotation (e.g., "add vegetable wrap in the rotation", "I want more paneer dishes", "include dosa in future plans")
+- add_dislike: user wants to exclude something (e.g., "I don't like bitter gourd", "no more karela")
 - today: user asks about today's meals
 - tomorrow: user asks about tomorrow's meals
 - grocery: user asks about the full week's grocery/shopping list
-- grocery_today: user asks about grocery/ingredients needed for today (e.g., "what do I need to buy for today", "grocery for today")
+- grocery_today: user asks about grocery/ingredients needed for today
 - grocery_tomorrow: user asks about grocery/ingredients needed for tomorrow
+- calories: user asks about calories or nutrition
 - suggest: user wants meal suggestions
 - help: user needs help or instructions
 - other: anything else
 
 If the intent is swap, also extract the day and meal_type if mentioned.
 If no meal_type is mentioned for a swap, default to "dinner".
+If the intent is add_favorite or add_dislike, extract the food item in the "day" field.
 """
 
 

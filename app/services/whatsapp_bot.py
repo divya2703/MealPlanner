@@ -279,6 +279,20 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
                 _handle_daily_grocery(db, from_number, "today", gid)
             elif intent_name == "grocery_tomorrow":
                 _handle_daily_grocery(db, from_number, "tomorrow", gid)
+            elif intent_name == "add_favorite":
+                item = intent.get("day", "").strip()
+                if item:
+                    _handle_favorites(db, from_number, f"fav {item}")
+                else:
+                    send_whatsapp(from_number, "What dish would you like to add? E.g., *fav vegetable wrap*")
+            elif intent_name == "add_dislike":
+                item = intent.get("day", "").strip()
+                if item:
+                    _handle_dislikes(db, from_number, f"dislike {item}")
+                else:
+                    send_whatsapp(from_number, "What would you like to exclude? E.g., *dislike bitter gourd*")
+            elif intent_name == "calories":
+                _handle_calories(db, from_number, gid)
             elif intent_name == "suggest":
                 _handle_suggest(db, from_number, text)
             elif intent_name == "help":
@@ -432,6 +446,20 @@ def _weekly_plan_flow(db: Session, number: str, text: str, state: ConversationSt
                         _start_swap_flow(db, number, f"swap {day} {meal_type}", gid)
                     else:
                         send_whatsapp(number, "Which day and meal? E.g., *swap friday dinner*")
+                elif intent_name == "add_favorite":
+                    item = intent.get("day", "").strip()
+                    if item:
+                        _handle_favorites(db, number, f"fav {item}")
+                        send_whatsapp(number, "The plan is still pending — reply *1* to approve or *2* to regenerate.")
+                    else:
+                        send_whatsapp(number, "What dish? E.g., *fav vegetable wrap*")
+                elif intent_name == "add_dislike":
+                    item = intent.get("day", "").strip()
+                    if item:
+                        _handle_dislikes(db, number, f"dislike {item}")
+                        send_whatsapp(number, "The plan is still pending — reply *1* to approve, *2* to regenerate (with your updated preferences).")
+                    else:
+                        send_whatsapp(number, "What to exclude? E.g., *dislike bitter gourd*")
                 else:
                     send_whatsapp(number, "Reply *1* to approve, *2* to regenerate, or *swap [day] [meal]* to change a specific meal.")
             except Exception:
