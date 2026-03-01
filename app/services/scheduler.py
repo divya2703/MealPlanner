@@ -5,11 +5,10 @@ from datetime import date, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from app.config import settings
 from app.database import SessionLocal
-from app.models import DailyPlan, WeeklyPlan
+from app.models import DailyPlan, UserPreferences
 from app.services.meal_planner import format_daily_meals
-from app.services.message_sender import send_to_user
+from app.services.message_sender import send_whatsapp
 from app.services.whatsapp_bot import send_daily_confirmation
 
 logger = logging.getLogger(__name__)
@@ -17,10 +16,26 @@ logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler()
 
 
+def _get_all_user_numbers() -> list[str]:
+    """Get WhatsApp numbers for all registered users."""
+    db = SessionLocal()
+    try:
+        users = db.query(UserPreferences.whatsapp_number).all()
+        return [u.whatsapp_number for u in users if u.whatsapp_number]
+    finally:
+        db.close()
+
+
+def _send_to_all(body: str):
+    """Send a message to all registered users."""
+    for number in _get_all_user_numbers():
+        send_whatsapp(number, body)
+
+
 def weekly_plan_reminder():
     """Sunday 9 AM — Remind user to generate weekly plan."""
     logger.info("Sending weekly plan reminder")
-    send_to_user(
+    _send_to_all(
         "Good morning! ☀️ Time to plan meals for the week.\n\n"
         "Reply *plan* to generate a new weekly meal plan."
     )
@@ -31,7 +46,8 @@ def daily_confirmation():
     logger.info("Sending daily confirmation")
     db = SessionLocal()
     try:
-        send_daily_confirmation(db, settings.user_whatsapp_number)
+        for number in _get_all_user_numbers():
+            send_daily_confirmation(db, number)
     finally:
         db.close()
 
@@ -47,7 +63,7 @@ def morning_summary():
             return
 
         formatted = format_daily_meals(daily)
-        send_to_user(f"Good morning! ☀️ Here's today's menu:\n\n{formatted}")
+        _send_to_all(f"Good morning! ☀️ Here's today's menu:\n\n{formatted}")
     finally:
         db.close()
 
@@ -66,7 +82,7 @@ def low_stock_alert():
                 qty = f"{item.quantity:g}" if item.quantity == int(item.quantity) else f"{item.quantity:.1f}"
                 lines.append(f"• {item.name}: {qty} {item.unit}")
             lines.append("\nReply *out of [item]* to mark as depleted.")
-            send_to_user("\n".join(lines))
+            _send_to_all("\n".join(lines))
     finally:
         db.close()
 
