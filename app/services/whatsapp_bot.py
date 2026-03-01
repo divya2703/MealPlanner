@@ -42,8 +42,10 @@ Commands:
 • *today* — See today's meals
 • *tomorrow* — See tomorrow's meals
 • *swap [day] [meal]* — Swap a meal (e.g., swap monday dinner)
-• *grocery* or *list* — View grocery list
-• *swiggy* — Get Swiggy Instamart search links
+• *grocery* — View full week's grocery list
+• *grocery today* / *grocery tomorrow* — Grocery for a specific day
+• *swiggy* — Swiggy Instamart links (full week)
+• *swiggy today* / *swiggy tomorrow* — Swiggy links for a specific day
 • *bought [items]* — Mark items as purchased (e.g., bought tomatoes, onions)
 • *out of [item]* — Mark item as depleted
 • *rate [1-5]* — Rate today's meals
@@ -93,8 +95,24 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
         _handle_grocery_list(db, from_number)
         return
 
+    if lower in ("grocery today", "list today", "grocery for today"):
+        _handle_daily_grocery(db, from_number, "today")
+        return
+
+    if lower in ("grocery tomorrow", "list tomorrow", "grocery for tomorrow"):
+        _handle_daily_grocery(db, from_number, "tomorrow")
+        return
+
     if lower in ("swiggy", "instamart", "swiggy list"):
         _handle_swiggy_list(db, from_number)
+        return
+
+    if lower in ("swiggy today", "instamart today"):
+        _handle_daily_swiggy(db, from_number, "today")
+        return
+
+    if lower in ("swiggy tomorrow", "instamart tomorrow"):
+        _handle_daily_swiggy(db, from_number, "tomorrow")
         return
 
     if lower == "bought" or lower.startswith("bought "):
@@ -149,6 +167,10 @@ def handle_message(db: Session, from_number: str, body: str) -> None:
                 _handle_tomorrow(db, from_number)
             elif intent_name == "grocery":
                 _handle_grocery_list(db, from_number)
+            elif intent_name == "grocery_today":
+                _handle_daily_grocery(db, from_number, "today")
+            elif intent_name == "grocery_tomorrow":
+                _handle_daily_grocery(db, from_number, "tomorrow")
             elif intent_name == "suggest":
                 _handle_suggest(db, from_number, text)
             elif intent_name == "help":
@@ -481,6 +503,46 @@ def _handle_swiggy_list(db: Session, number: str):
         send_whatsapp(number, "No grocery list found. Approve a meal plan first.")
         return
     formatted = grocery_manager.format_swiggy_list(gl)
+    send_whatsapp(number, formatted)
+
+
+def _handle_daily_grocery(db: Session, number: str, day: str):
+    """Handle 'grocery today' / 'grocery tomorrow' commands."""
+    from datetime import timedelta
+
+    if day == "today":
+        target = date.today()
+        label = "Today"
+    else:
+        target = date.today() + timedelta(days=1)
+        label = "Tomorrow"
+
+    send_whatsapp(number, f"Extracting grocery list for {label.lower()}...")
+    items = grocery_manager.get_daily_grocery(db, target)
+    if not items:
+        send_whatsapp(number, f"No meals planned for {label.lower()}.")
+        return
+    formatted = grocery_manager.format_daily_grocery(items, label)
+    send_whatsapp(number, formatted)
+
+
+def _handle_daily_swiggy(db: Session, number: str, day: str):
+    """Handle 'swiggy today' / 'swiggy tomorrow' commands."""
+    from datetime import timedelta
+
+    if day == "today":
+        target = date.today()
+        label = "Today"
+    else:
+        target = date.today() + timedelta(days=1)
+        label = "Tomorrow"
+
+    send_whatsapp(number, f"Generating Swiggy links for {label.lower()}...")
+    items = grocery_manager.get_daily_grocery(db, target)
+    if not items:
+        send_whatsapp(number, f"No meals planned for {label.lower()}.")
+        return
+    formatted = grocery_manager.format_daily_swiggy(items, label)
     send_whatsapp(number, formatted)
 
 

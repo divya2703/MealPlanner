@@ -108,6 +108,60 @@ def format_swiggy_list(grocery_list: GroceryList) -> str:
     return "\n".join(lines)
 
 
+def get_daily_grocery(db: Session, target_date: date) -> list[dict] | None:
+    """Extract grocery list for a single day's meals using Gemini."""
+    daily = db.query(DailyPlan).filter(DailyPlan.plan_date == target_date).first()
+    if not daily or not daily.planned_meals:
+        return None
+
+    meals = [pm.meal_name for pm in daily.planned_meals]
+    pantry = db.query(PantryItem).filter(PantryItem.quantity > 0).all()
+    pantry_items = [f"{p.name} ({p.quantity} {p.unit})" for p in pantry]
+
+    return extract_grocery_list(db, meals, pantry_items)
+
+
+def format_daily_grocery(items: list[dict], label: str) -> str:
+    """Format a daily grocery list for WhatsApp display."""
+    by_category: dict[str, list[dict]] = {}
+    for item in items:
+        by_category.setdefault(item.get("category", "other"), []).append(item)
+
+    category_order = ["vegetable", "dairy", "grain", "pulse", "spice", "oil", "other"]
+    category_emoji = {
+        "vegetable": "🥬", "dairy": "🧈", "grain": "🌾", "pulse": "🫘",
+        "spice": "🌶️", "oil": "🫒", "other": "📦",
+    }
+
+    lines = [f"*Grocery for {label}* 🛒\n"]
+
+    for cat in category_order:
+        cat_items = by_category.get(cat, [])
+        if not cat_items:
+            continue
+        emoji = category_emoji.get(cat, "📦")
+        lines.append(f"{emoji} *{cat.title()}*")
+        for item in sorted(cat_items, key=lambda i: i["name"]):
+            qty = f"{item['quantity']:g}" if item["quantity"] == int(item["quantity"]) else f"{item['quantity']:.1f}"
+            lines.append(f"  ⬜ {item['name']} — {qty} {item['unit']}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_daily_swiggy(items: list[dict], label: str) -> str:
+    """Format daily grocery as Swiggy Instamart search links."""
+    lines = [f"*Swiggy Instamart for {label}* 🛍️\n"]
+
+    for item in sorted(items, key=lambda i: (i.get("category", ""), i["name"])):
+        url = SWIGGY_SEARCH_URL.format(query=item["name"].replace(" ", "+"))
+        qty = f"{item['quantity']:g}" if item["quantity"] == int(item["quantity"]) else f"{item['quantity']:.1f}"
+        lines.append(f"• {item['name']} ({qty} {item['unit']})")
+        lines.append(f"  {url}")
+
+    return "\n".join(lines)
+
+
 def mark_items_bought(db: Session, grocery_list: GroceryList, item_names: list[str]) -> list[str]:
     """Mark items as bought in the grocery list. Returns list of matched item names."""
     matched = []

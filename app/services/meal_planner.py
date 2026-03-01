@@ -338,7 +338,9 @@ Classify the user's message into one of these intents:
 - swap: user wants to change a specific meal (e.g., "something else for friday dinner", "change monday breakfast")
 - today: user asks about today's meals
 - tomorrow: user asks about tomorrow's meals
-- grocery: user asks about grocery/shopping list
+- grocery: user asks about the full week's grocery/shopping list
+- grocery_today: user asks about grocery/ingredients needed for today (e.g., "what do I need to buy for today", "grocery for today")
+- grocery_tomorrow: user asks about grocery/ingredients needed for tomorrow
 - suggest: user wants meal suggestions
 - help: user needs help or instructions
 - other: anything else
