@@ -7,7 +7,12 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-engine = create_engine(settings.database_url, connect_args={"check_same_thread": False})
+# SQLite needs check_same_thread=False; PostgreSQL doesn't use it
+connect_args = {}
+if settings.database_url.startswith("sqlite"):
+    connect_args["check_same_thread"] = False
+
+engine = create_engine(settings.database_url, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
@@ -56,11 +61,9 @@ def _seed_default_group():
             db.add(group)
             db.flush()
 
-        # Assign unassigned users
         db.query(UserPreferences).filter(UserPreferences.group_id.is_(None)).update(
             {"group_id": group.id}, synchronize_session=False
         )
-        # Assign unassigned plans, groceries, pantry, history
         for Model in [WeeklyPlan, GroceryList, PantryItem, MealHistory]:
             db.query(Model).filter(Model.group_id.is_(None)).update(
                 {"group_id": group.id}, synchronize_session=False
