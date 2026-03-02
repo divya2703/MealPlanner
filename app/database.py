@@ -7,12 +7,17 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Fix Railway's postgres:// scheme (SQLAlchemy 2.0 requires postgresql://)
+db_url = settings.database_url
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
 # SQLite needs check_same_thread=False; PostgreSQL doesn't use it
 connect_args = {}
-if settings.database_url.startswith("sqlite"):
+if db_url.startswith("sqlite"):
     connect_args["check_same_thread"] = False
 
-engine = create_engine(settings.database_url, connect_args=connect_args)
+engine = create_engine(db_url, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
