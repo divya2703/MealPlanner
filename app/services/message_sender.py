@@ -95,12 +95,29 @@ def _send_whatsapp(to: str, body: str) -> bool:
                 body=part,
                 to=to,
             )
-            logger.info(f"Sent WhatsApp message {message.sid} to {to} (part {i + 1}/{len(parts)})")
-        except Exception:
+            logger.info(f"Sent WhatsApp {message.sid} status={message.status} to={to}")
+            _log_delivery(to, f"sid={message.sid} status={message.status}")
+        except Exception as e:
             logger.exception(f"Failed to send WhatsApp message to {to}")
+            _log_delivery(to, f"FAILED: {e}")
             return False
 
     return True
+
+
+def _log_delivery(user_id: str, detail: str):
+    """Log Twilio delivery status to DB."""
+    try:
+        from app.database import SessionLocal
+        from app.models import BotLog
+        db = SessionLocal()
+        try:
+            db.add(BotLog(direction="delivery", user_id=user_id, message=detail))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass
 
 
 def _send_telegram(chat_id: str, body: str) -> bool:
